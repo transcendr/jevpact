@@ -1,6 +1,6 @@
 # T3 guarded maintenance
 
-`T3Reader` remains read-only. `T3Transport` adds explicit maintenance for a T3 server advertising `guardedMaintenance: 1`. Both use authenticated protocol-2 connections to the same environment. The accepted server implementation is local T3 commit `d36c1cd9c404e223cec046773ac77c7fbe80708f`; an ordinary installed T3 build without that capability cannot perform maintenance through this adapter.
+`T3Reader` remains read-only. `T3Transport` adds explicit maintenance for a T3 server advertising `guardedMaintenance: 1`. Both use authenticated protocol-2 connections to the same environment. Active pause additionally requires `guardedMaintenanceActivePause: true`. A server without that flag can perform guarded idle maintenance but receives no active pause from this adapter.
 
 Import the components into a host that owns its Jevpact daemon. Supply the actual T3 origin, environment ID, project root, and a credential callback reading a private credential file. Keep credentials out of configuration, logs, command arguments, and source:
 
@@ -33,7 +33,7 @@ await daemon.dispatch({ method: 'maintain', threadId });
 
 An existing attachment keeps its original grant. To change it, use `reattach` with an explicit `allowWrites: true`; omit that flag to return to read-only. Reattachment refuses while a controller operation is pending. Grants are not saved or restored across daemon restarts. Status exposes `allowWrites`. Observation mode remains the reported mode because automatic checkpoint policy stays off, including after configuration reloads.
 
-`maintain` starts an operation and returns its operation ID. Observe controller decisions and status for its outcome; that response is not delivery or completion. Active Codex work receives the existing pause message, then the genuine Jev pause assessment decides whether to compact and whether actionable work remains. Deferral can continue the assignment without compaction. Claude active pause is refused locally with `maintenance-unsupported`, without sending provider input. Claude supports idle maintenance only.
+`maintain` starts an operation and returns its operation ID. Observe controller decisions and status for its outcome; that response is not delivery or completion. Active work on a server advertising active-pause support receives the existing pause message, then the genuine Jev pause assessment decides whether to compact and whether actionable work remains. Deferral can continue the assignment without compaction. Claude maintenance uses SDK priority `next` without interrupting foreground work or backgrounding subagents. Ordinary user steering retains priority `now`.
 
 Idle maintenance leaves the thread idle by default. If continuing the existing unfinished assignment is explicitly authorized, request:
 

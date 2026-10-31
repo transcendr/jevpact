@@ -21,7 +21,7 @@ class Reader extends EventEmitter {
 function fixture(t, { allowWrites = true, capability = 1 } = {}) {
   const reader = new Reader(); const commands = [];
   const rpc = { async request(tag, payload) {
-    if (tag === 'server.getConfig') return { guardedMaintenance: capability, environment: { environmentId: 'env' } };
+    if (tag === 'server.getConfig') return { guardedMaintenance: capability, guardedMaintenanceActivePause: true, environment: { environmentId: 'env' } };
     commands.push(structuredClone(payload)); return { sequence: 12 };
   }, close() {} };
   const transport = new T3Transport({ rpc, environmentId: 'env' });
@@ -106,9 +106,17 @@ for (const change of [{ userStopped: true }, { userEpoch: 2 }, { providerSession
   });
 }
 
-test('Claude active pause refuses locally with no provider input', async t => {
+test('Claude active pause uses the advertised capability without a provider-specific refusal', async t => {
   const f = fixture(t); f.reader.s.provider = 'claudeAgent'; await f.transport.beginOperation('thread');
-  await assert.rejects(f.transport.steer('thread', 'work', 'Pause.'), { code: 'maintenance-unsupported' });
+  const action = f.transport.steer('thread', 'work', 'Pause.'); await turn();
+  assert.equal(f.commands[0].action, 'pause'); f.deliver('pause'); await action;
+});
+
+for (const provider of ['codex', 'claudeAgent']) test(`${provider} pause requires the explicit active-pause capability`, async t => {
+  const f = fixture(t); f.reader.s.provider = provider;
+  f.rpc.request = async tag => { assert.equal(tag, 'server.getConfig'); return { guardedMaintenance: 1, environment: { environmentId: 'env' } }; };
+  await f.transport.beginOperation('thread');
+  await assert.rejects(f.transport.steer('thread', 'work', 'Pause.'), { code: 't3-active-pause-unavailable' });
   assert.equal(f.commands.length, 0);
 });
 

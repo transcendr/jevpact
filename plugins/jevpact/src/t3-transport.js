@@ -19,6 +19,7 @@ export class T3Transport extends EventEmitter {
     const config = await this.rpc.request('server.getConfig', {});
     if (config.guardedMaintenance !== 1) throw t3Error('t3-guarded-maintenance-unavailable');
     if (config.environment?.environmentId !== this.environmentId) throw t3Error('t3-environment-mismatch');
+    this.activePause = config.guardedMaintenanceActivePause === true;
     return config;
   }
 
@@ -132,12 +133,16 @@ export class T3Transport extends EventEmitter {
     const s = reader.snapshot();
     if (expectedTurnId != null && s.turnId !== expectedTurnId) throw t3Error('stale-turn');
     if (isCurrent && !isCurrent()) throw t3Error('stale-action');
-    if (action === 'pause' && s.provider !== 'codex') throw t3Error('maintenance-unsupported');
+    this.checkAction(action);
     const command = { type: 'maintenance.dispatch', threadId, commandId: randomUUID(), messageId: randomUUID(),
       operationId: operation.id, action, text, guard: this.guard(operation, s) };
     operation.commands.set(action, command);
     const task = this.dispatch(threadId, operation, command, isCurrent);
     operation.actions.set(action, task); return task;
+  }
+
+  checkAction(action) {
+    if (action === 'pause' && !this.activePause) throw t3Error('t3-active-pause-unavailable');
   }
 
   operationCurrent(threadId, operation, isCurrent) {
@@ -151,6 +156,7 @@ export class T3Transport extends EventEmitter {
     const { sent, ...payload } = command;
     try {
       await this.connect();
+      this.checkAction(command.action);
       const current = () => this.operationCurrent(threadId, operation, isCurrent);
       if (!current()) throw t3Error('stale-action');
       command.sent = true;
