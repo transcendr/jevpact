@@ -257,3 +257,29 @@ test('reader factory scopes attachments by environment and retains no credential
   assert.equal(JSON.stringify(reader.options).includes('test-secret'), false);
   await reader.close();
 });
+
+for (const driver of ['codex', 'claudeAgent']) test(`${driver}: counts native request IDs once and starts a fresh cadence after compaction`, async t => {
+  const f=fixture(driver); t.after(()=>f.reader.close()); await f.reader.open();
+  const usage=(id,at,input=1000)=>({modelRequestId:id,inputTokens:input,usedTokens:input,maxTokens:200000,updatedAt:at});
+  const turn=(id,request,at,attempt='work-attempt')=>({id,providerThreadId:f.provider.id,ordinal:1,runAttemptId:attempt,tokenUsage:usage(request,at)});
+  f.event('run.created',{...f.run(),activeAttemptId:'work-attempt'});
+  f.event('provider-turn.updated',turn('native-turn','request-a','2026-10-31T12:00:01Z'));
+  assert.deepEqual([f.reader.snapshot().requests,f.reader.snapshot().requestsSinceCompaction,f.reader.snapshot().requestCountSupported],[1,1,true]);
+  f.event('provider-turn.updated',turn('native-turn','request-a','2026-10-31T12:00:02Z'));
+  f.event('provider-thread.updated',{...f.provider,contextUsage:usage('request-a','2026-10-31T12:00:02Z')});
+  assert.equal(f.reader.snapshot().requests,1);
+  f.event('provider-turn.updated',turn('native-turn','request-b','2026-10-31T12:00:03Z'));
+  assert.equal(f.reader.snapshot().requestsSinceCompaction,2);
+  f.event('message.updated',f.message('compact-message','user','/compact',{runId:'compact',createdBy:'agent'}));
+  f.event('run.created',{...f.run('compact','running',2),activeAttemptId:'compact-attempt'});
+  f.event('provider-turn.updated',turn('compact-turn','summary-request','2026-10-31T12:00:04Z','compact-attempt'));
+  f.event('turn-item.updated',f.item('compaction','compaction',{runId:'compact',status:'completed',completedAt:'2026-10-31T12:00:05Z'}));
+  assert.deepEqual([f.reader.snapshot().requests,f.reader.snapshot().requestsSinceCompaction],[2,0]);
+  f.event('provider-turn.updated',turn('native-turn','request-b','2026-10-31T12:00:06Z'));
+  assert.equal(f.reader.snapshot().requestsSinceCompaction,0,'A repeated old request is not a post-compaction request');
+  f.event('provider-turn.updated',turn('next-turn','request-c','2026-10-31T12:00:07Z','next-attempt'));
+  assert.deepEqual([f.reader.snapshot().requests,f.reader.snapshot().requestsSinceCompaction],[3,1]);
+  f.event('provider-thread.updated',{...f.provider,id:'child',ownerNodeId:'child-node'});
+  f.event('provider-turn.updated',{...turn('child-turn','child-request','2026-10-31T12:00:08Z'),providerThreadId:'child'});
+  assert.equal(f.reader.snapshot().requests,3,'Native child requests do not advance the root cadence');
+});

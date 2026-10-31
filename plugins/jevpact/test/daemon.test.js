@@ -347,7 +347,7 @@ test('T3 writes require explicit attachment opt-in and reattachment clears that 
       thread: { id: threadId }, runs: [], messages: [], turnItems: [], providerThreads: [], providerTurns: [], subagents: [] } });
     onFrame({ kind: 'synchronized' }); }, close() {} } });
   const { daemon, transport } = await fixture(t, { readerFactory, onlyThreadId: threadId });
-  transport.capabilities = { explicitMaintenance: true, automatic: false };
+  transport.capabilities = { explicitMaintenance: true, automatic: true };
   const grants = []; transport.bindReader = (_id, _reader, options) => grants.push(options.allowWrites);
   await daemon.dispatch({ method: 'attach', threadId });
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, false);
@@ -356,6 +356,10 @@ test('T3 writes require explicit attachment opt-in and reattachment clears that 
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, false, 'An existing read-only attachment is not silently upgraded');
   await daemon.dispatch({ method: 'reattach', threadId, allowWrites: true });
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, true);
+  assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].mode, 'automatic');
+  assert.equal((await daemon.dispatch({ method: 'status' })).mode, 'automatic');
+  await daemon.dispatch({ method: 'reload-config' });
+  assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].mode, 'automatic');
   await daemon.dispatch({ method: 'reattach', threadId });
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, false);
   assert.deepEqual(grants, [false, true, false]);

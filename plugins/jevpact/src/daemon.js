@@ -38,9 +38,10 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   };
   if (readerFactory && source.observationOnly !== true) throw new Error('Injected readers must be observation-only');
   let savedConfig = await readConfig();
-  const effectiveFor = state => {
+  const effectiveFor = (state, allowWrites = false) => {
     const resolved = resolveConfig(savedConfig, { threadId: state.threadId, cwd: state.cwd, base: config });
-    if (source.observationOnly && resolved.settings.mode !== 'off') resolved.settings = { ...resolved.settings, mode: 'observe' };
+    if (source.observationOnly && resolved.settings.mode !== 'off'
+      && (allowWrites !== true || codex.capabilities?.automatic !== true || codex.capabilities?.explicitMaintenance !== true)) resolved.settings = { ...resolved.settings, mode: 'observe' };
     return resolved;
   };
   const globalSettings = resolveConfig(savedConfig, { base: config }).settings;
@@ -141,7 +142,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
         const state = await source.locate(id);
         if (closing || attempt.cancelled) return null;
         attempt.path = state.rolloutPath;
-        const resolved = effectiveFor({ threadId: id, cwd: state.cwd });
+        const resolved = effectiveFor({ threadId: id, cwd: state.cwd }, allowWrites);
         const settings = resolved.settings;
         reader = source.create({ threadId: id, location: state, settings, requestedPath });
         attempt.reader = reader;
@@ -195,7 +196,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       configPath: configPath(),
       history: { ...historyOptions, available: !!history, failure: historyFailure },
       restoring: restoringCount,
-      mode: source.observationOnly ? 'observe' : 'automatic',
+      mode: source.observationOnly && ![...threads.values()].some(e => e.allowWrites && e.settings.mode === 'automatic') ? 'observe' : 'automatic',
       threads: [...threads.values()].map(e => ({ ...e.controller.view(),
         configState: e.configState && { ...e.configState, deferred: !!e.controller.nextConfig },
         matchedProject: e.resolved.matchedProject,
@@ -211,7 +212,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       const changed = [];
       let registryChanged = false;
       for (const entry of threads.values()) {
-        const resolved = effectiveFor({ threadId: entry.id, cwd: entry.cwd });
+        const resolved = effectiveFor({ threadId: entry.id, cwd: entry.cwd }, entry.allowWrites);
         const reattachRequired = readerFactory ? [] : CONFIG_REATTACH_KEYS.filter(key => {
           const readerKey = key === 'watchTranscript' ? 'watch' : key;
           return entry.reader.options[readerKey] !== resolved.settings[key];

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { T3Transport } from '../src/t3-transport.js';
 import { Controller } from '../src/controller.js';
+import { decide, DEFAULT_POLICY } from '../src/policy.js';
 
 const turn = () => new Promise(resolve => setImmediate(resolve));
 class Reader extends EventEmitter {
@@ -41,10 +42,20 @@ function controller(t, f, answers = { deferral: { choice: 'no' }, continuation: 
     evaluate: async () => ({ answers }), decide: () => { throw new Error('Automatic policy must stay off'); } });
   t.after(() => c.close()); return c;
 }
-async function pause(t, answers) {
-  const f = fixture(t); const c = controller(t, f, answers);
-  await c.requestMaintenance(); await turn();
-  f.deliver('pause'); await c.explicitTask;
+function automaticController(t, f, answers = { deferral: { choice: 'no' }, continuation: { choice: 'yes' } }) {
+  Object.assign(f.reader.s, { inputTokens: DEFAULT_POLICY.nativeLimitTokens,
+    modelContextWindow: DEFAULT_POLICY.nativeLimitTokens + DEFAULT_POLICY.reserveTokens,
+    baselineInputTokens: 0, recentGrowthTokens: 1000, requests: DEFAULT_POLICY.minRequests,
+    requestsSinceCompaction: DEFAULT_POLICY.minRequests });
+  const c = new Controller({ reader: f.reader, codex: f.transport, config: { mode: 'automatic' }, decide,
+    evaluate: async () => ({ answers }) });
+  t.after(() => c.close()); return c;
+}
+async function pause(t, answers, automatic = false) {
+  const f = fixture(t); const c = automatic ? automaticController(t, f, answers) : controller(t, f, answers);
+  let task;
+  if (automatic) task = c.tick(); else await c.requestMaintenance();
+  await turn(); f.deliver('pause'); await (task ?? c.explicitTask);
   f.reader.update({ turnStatus: 'idle', lastTurnStatus: 'completed', messages: [
     { role: 'assistant', turnId: 'work', sequence: 20, phase: 'final', text: 'Step one is verified. Next implement step two; no input is needed.' }] });
   return { ...f, c };
@@ -59,10 +70,29 @@ test('read-only default and old-server capability prevent every mutation', async
   }
 });
 
-test('automatic controller policy stays off even on an opted-in attachment', async t => {
-  const f = fixture(t); const c = controller(t, f); await c.tick();
+test('read-only attachment cannot enter automatic maintenance at the policy pressure ceiling', async t => {
+  const f = fixture(t, { allowWrites: false }); const c = automaticController(t, f); await c.tick();
   assert.equal(f.commands.length, 0); assert.equal(c.pending, null);
 });
+
+for (const provider of ['codex', 'claudeAgent']) {
+  test(`${provider}: real automatic policy opens a guarded operation and pauses the active run`, async t => {
+    const f = fixture(t); f.reader.s.provider = provider; const c = automaticController(t, f);
+    const tick = c.tick(); await turn(); assert.deepEqual(f.commands.map(c => c.action), ['pause']);
+    assert.ok(c.pending.operationId); assert.equal(c.pending.explicit, undefined);
+    f.deliver('pause'); await tick; assert.equal(c.state, 'awaiting-idle');
+  });
+  test(`${provider}: real automatic policy compacts an idle run through the guarded transport`, async t => {
+    const f = fixture(t); f.reader.s.provider = provider; f.reader.s.turnStatus = 'idle';
+    const c = automaticController(t, f); const tick = c.tick(); await turn();
+    assert.deepEqual(f.commands.map(c => c.action), ['compact']); f.deliver('compact');
+    f.reader.update({ runId: 'compact', turnId: 'compact', runAttemptId: 'compact-attempt',
+      compactionGeneration: 1, compactionItemId: 'item', compactionRunStatus: 'completed',
+      requestsSinceCompaction: 0, baselineInputTokens: null });
+    await tick; assert.equal(c.log.filter(e => e.event === 'compacted').length, 1);
+    assert.equal(f.commands.length, 1);
+  });
+}
 
 test('accepted is not delivered; same action is exactly once and guards keep the original fence', async t => {
   const f = fixture(t); await f.transport.beginOperation('thread');
@@ -157,8 +187,8 @@ test('deferral continues unfinished work once without issuing compaction', async
   assert.equal(f.c.log.at(-1).event, 'continued-without-compaction');
 });
 
-test('independent compaction is adopted after delivered pause and never dispatched twice', async t => {
-  const f = await pause(t);
+for (const automatic of [false, true]) test(`independent compaction is adopted without duplicate dispatch (automatic=${automatic})`, async t => {
+  const f = await pause(t, undefined, automatic);
   f.reader.update({ runId: 'independent', turnId: 'independent', runMessageObserved: false,
     workRunId: 'independent', runAttemptId: 'independent-attempt', turnStatus: 'active' });
   await f.c.tick(); assert.ok(f.c.pending, 'Run creation alone cannot classify its missing message');

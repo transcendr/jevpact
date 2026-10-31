@@ -6,12 +6,12 @@ const sameIdentity = (left, right) => left.providerInstanceId === right.provider
   && left.providerThreadId === right.providerThreadId && left.providerSessionId === right.providerSessionId
   && ['driver', 'nativeId', 'strength', 'fingerprint', 'ordinal'].every(key => left.nativeSessionRef?.[key] === right.nativeSessionRef?.[key]);
 
-/** Maintenance is attachment-scoped, explicitly triggered, and guarded by the T3 server. */
+/** Maintenance is attachment-scoped and guarded by the T3 server. */
 export class T3Transport extends EventEmitter {
   constructor({ rpc, environmentId, ...options }) {
     super(); this.rpc = rpc ?? new T3Rpc(options); this.environmentId = environmentId;
     this.readers = new Map(); this.operations = new Map();
-    this.capabilities = Object.freeze({ status: true, explicitMaintenance: true, automatic: false,
+    this.capabilities = Object.freeze({ status: true, explicitMaintenance: true, automatic: true,
       compact: true, resume: true, steer: true, exactTurnSteer: true, atomicIdleMutation: true, childPreservingInterrupt: false });
   }
 
@@ -27,6 +27,11 @@ export class T3Transport extends EventEmitter {
     const s = reader.snapshot();
     if (s.threadId !== threadId || s.environmentId !== this.environmentId || reader.closed) throw t3Error('t3-reader-identity-mismatch');
     this.readers.set(threadId, { reader, allowWrites: allowWrites === true });
+  }
+
+  canMaintainAutomatically(threadId) {
+    const binding = this.readers.get(threadId);
+    return binding?.allowWrites === true && !binding.reader.closed;
   }
 
   unbindReader(threadId, reader) {

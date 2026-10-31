@@ -60,4 +60,4 @@ Message bodies accept `{{token.name}}` anywhere; `config tokens` lists names and
 
 Tool tokens use recent observed rollout records. `tools.recentCalls:N` includes bounded call inputs and whether a result was observed; `tools.pendingCalls` means no result was observed for those recent calls, not that they are definitely still running. `tools.lastResult` includes a bounded textual output excerpt. These tool details stay out of the Jev decision packet unless quoted by an assistant or user; using a tool token copies them into the Codex message. Native compaction is opaque, so `{{compaction.recordText}}` is rejected rather than presented as a readable summary.
 
-The [programmatic T3 adapter](t3-transport.md) supports explicit guarded maintenance on a patched T3 server. Attachments default to read-only, write grants are per attachment, and automatic T3 checkpoint policy stays off.
+The [programmatic T3 adapter](t3-transport.md) supports automatic and explicit guarded maintenance on a patched T3 server. Attachments default to read-only; enabling writes allows the configured automatic policy.

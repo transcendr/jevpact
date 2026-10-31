@@ -63,14 +63,14 @@ export class Controller extends EventEmitter {
 
   selectedTurnChanged(s) {
     const p = this.pending;
-    if (p?.explicit && s.runMessageObserved === false) return false;
-    return p && !(p.explicit && p.adoptedCompaction) && ['awaiting-idle', 'checking-pause'].includes(this.state)
+    if (p?.operationId && s.runMessageObserved === false) return false;
+    return p && !(p.operationId && p.adoptedCompaction) && ['awaiting-idle', 'checking-pause'].includes(this.state)
       && s.turnId != null && s.turnId !== p.turnId;
   }
 
   adoptObservedCompaction(s) {
     const p = this.pending;
-    if (!p?.explicit || !p.delivered || !['awaiting-idle', 'checking-pause'].includes(this.state)) return;
+    if (!p?.operationId || !p.delivered || !['awaiting-idle', 'checking-pause'].includes(this.state)) return;
     const sameWork = s.turnId === p.turnId || (s.maintenanceRunId && s.workRunId === p.turnId);
     if (!sameWork || (!s.maintenanceRunId && s.compactionGeneration <= p.generation)) return;
     if (!p.adoptedCompaction) this.record('native-compaction-adopted', { turnId: p.turnId, origin: 't3' });
@@ -80,7 +80,7 @@ export class Controller extends EventEmitter {
 
   pauseIsIdle(s, p) {
     if (s.turnStatus !== 'idle') return false;
-    if (!p.explicit || !p.adoptedCompaction) return s.turnId === p.turnId;
+    if (!p.operationId || !p.adoptedCompaction) return s.turnId === p.turnId;
     return s.compactionGeneration > p.initialGeneration && s.compactionRunStatus === 'completed';
   }
 
@@ -235,8 +235,8 @@ export class Controller extends EventEmitter {
         return;
       }
       if (this.config.mode === 'off') { this.skip('configuration-off', s); return; }
-      if (this.codex.capabilities?.automatic === false && !this.pending?.explicit) {
-        this.skip('t3-automatic-policy-disabled', s); return;
+      if (!this.pending && this.codex.canMaintainAutomatically?.(s.sessionId) === false) {
+        this.skip('t3-writes-not-enabled', s); return;
       }
       if (this.state === 'recovery-required') {
         // A failed/ambiguous operation must not silently strand a paused worker or
@@ -315,7 +315,14 @@ export class Controller extends EventEmitter {
         this.record('would-checkpoint', { kind: decision.kind, reason: decision.reason });
         return;
       }
+      let operationId;
+      if (typeof this.codex.beginOperation === 'function') {
+        const isCurrent = () => this.maintenanceIsCurrent(s) && (this.config.mode ?? 'automatic') === 'automatic';
+        operationId = await this.codex.beginOperation(s.sessionId, { isCurrent });
+        if (!isCurrent()) { this.codex.endOperation(s.sessionId); return; }
+      }
       this.pending = { turnId: s.turnId, stamp: stamp(s), generation: s.compactionGeneration,
+        operationId, initialGeneration: s.compactionGeneration,
         evaluationId: result?.evaluationId ?? null,
         revision: s.revision, createdAt: this.now(), kind: decision.kind, reason: decision.reason,
         templateContext: { ...this.templateContext }, delivered: false,
@@ -432,7 +439,7 @@ export class Controller extends EventEmitter {
       await this.reader.refresh();
       if (!this.isPending(p)) return;
       const fresh = this.reader.snapshot();
-      if (p.explicit && p.adoptedCompaction && (!this.pauseIsIdle(fresh, p) || stamp(fresh) !== p.stamp)) {
+      if (p.operationId && p.adoptedCompaction && (!this.pauseIsIdle(fresh, p) || stamp(fresh) !== p.stamp)) {
         this.state = 'awaiting-idle'; return;
       }
       if (stamp(fresh) !== p.stamp || fresh.turnStatus !== 'idle' || !fresh.supported || fresh.userStopped) {

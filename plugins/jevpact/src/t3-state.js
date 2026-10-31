@@ -31,6 +31,8 @@ export class T3State {
     this.afterSequence = null;
     this.disabledReason = 'not-open';
     this.measurements = new Map();
+    this.modelRequests = new Map();
+    this.compactionTimes = new Map();
     this.collections = Object.fromEntries([...new Set(Object.values(COLLECTION))].map(key => [key, new Map()]));
   }
 
@@ -91,13 +93,39 @@ export class T3State {
     const previousUsage = previous?.tokenUsage ?? previous?.contextUsage;
     const completed = name === 'turnItems' && record.type === 'compaction' && record.status === 'completed';
     const firstCompletion = completed && previous?.completionSequence == null;
-    if (firstCompletion) this.measurements.delete(record.providerThreadId);
+    if (firstCompletion) {
+      this.measurements.delete(record.providerThreadId);
+      this.compactionTimes.set(record.providerThreadId, Math.max(this.compactionTimes.get(record.providerThreadId) ?? 0,
+        time(record.completedAt ?? record.updatedAt)));
+    }
+    this.trackRequest(name, record, usage);
     if (usage != null && JSON.stringify(usage) !== JSON.stringify(previousUsage)) {
       this.measure(record.providerThreadId ?? record.id, usage);
     }
     records.set(record.id, { ...record, sequence,
       completionSequence: firstCompletion ? sequence : previous?.completionSequence,
       usageSequence: usage != null && JSON.stringify(usage) !== JSON.stringify(previousUsage) ? sequence : previous?.usageSequence });
+  }
+
+  trackRequest(name, record, usage) {
+    const id = usage?.modelRequestId;
+    if (name !== 'providerTurns' || typeof id !== 'string' || !id.trim() || !record.providerThreadId) return;
+    const requests = this.modelRequests.get(record.providerThreadId) ?? new Map();
+    if (!requests.has(id)) requests.set(id, { at: time(usage.updatedAt), attemptId: record.runAttemptId });
+    this.modelRequests.set(record.providerThreadId, requests);
+  }
+
+  requestCounts(providerId) {
+    const records = this.modelRequests.get(providerId);
+    if (!records || this.collections.providerThreads.get(providerId)?.ownerNodeId != null) {
+      return { requests: null, requestsSinceCompaction: null, requestCountSupported: false };
+    }
+    const compactAttempts = new Set(list(this.collections.runs)
+      .filter(run => maintenance(this.collections.messages.get(run.userMessageId))).map(run => run.activeAttemptId));
+    const requests = list(records).filter(request => !compactAttempts.has(request.attemptId));
+    const after = this.compactionTimes.get(providerId) ?? 0;
+    return { requests: requests.length, requestsSinceCompaction: requests.filter(request => request.at > after).length,
+      requestCountSupported: true };
   }
 
   trackDirection(name, record) {
@@ -236,7 +264,7 @@ export class T3State {
       goalStatus: provider?.goal?.status ?? null, goalStatusObserved: !!provider,
       compactionGeneration: compactions.length, compactionItemId: latestCompaction?.id ?? null,
       compactionCompletedAt: latestCompaction?.completedAt ?? null,
-      requests: null, requestsSinceCompaction: null, requestCountSupported: false,
+      ...this.requestCounts(provider?.id),
       inputTokens, modelContextWindow: validNumber(usage?.maxTokens) && usage.maxTokens > 0 ? usage.maxTokens : null,
       contextUsedTokens: usageIsCurrent && validNumber(usage?.usedTokens) ? usage.usedTokens : null,
       baselineInputTokens: inputTokens == null ? null : this.measurements.get(provider?.id)?.baseline ?? null,
