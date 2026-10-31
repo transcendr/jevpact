@@ -283,3 +283,30 @@ for (const driver of ['codex', 'claudeAgent']) test(`${driver}: counts native re
   f.event('provider-turn.updated',{...turn('child-turn','child-request','2026-10-31T12:00:08Z'),providerThreadId:'child'});
   assert.equal(f.reader.snapshot().requests,3,'Native child requests do not advance the root cadence');
 });
+
+test('a queued successor is not the current assignment used by maintenance guards',async t=>{
+ const f=fixture('codex');t.after(()=>f.reader.close());await f.reader.open();
+ f.event('run.created',f.run('active','running',1));f.event('run.created',f.run('queued','queued',2));
+ assert.equal(f.reader.snapshot().runId,'active');assert.equal(f.reader.snapshot().workRunId,'active');
+});
+
+for(const driver of ['codex','claudeAgent'])test(`${driver}: lost native request identity is visible without counting duplicate usage as requests`,async t=>{
+ const f=fixture(driver);t.after(()=>f.reader.close());await f.reader.open();
+ const usage={modelRequestId:'native-one',inputTokens:1000,usedTokens:1100,maxTokens:200000,updatedAt:stamp};
+ const turn={id:'turn',providerThreadId:f.provider.id,ordinal:1,runAttemptId:'attempt',tokenUsage:usage};
+ f.event('provider-turn.updated',turn);assert.equal(f.reader.snapshot().modelRequestIdentityAvailable,true);
+ f.event('provider-turn.updated',{...turn,tokenUsage:{...usage,updatedAt:'2026-10-31T12:00:01Z'}});
+ assert.equal(f.reader.snapshot().modelRequestIdentityAvailable,true);assert.equal(f.reader.snapshot().requests,1);
+ f.event('provider-turn.updated',{...turn,tokenUsage:{...usage,modelRequestId:undefined,inputTokens:2000,usedTokens:2100}});
+ assert.equal(f.reader.snapshot().modelRequestIdentityAvailable,false);assert.equal(f.reader.snapshot().requests,1);
+ f.event('provider-turn.updated',{...turn,tokenUsage:{...usage,modelRequestId:'native-two',inputTokens:2000,usedTokens:2100}});
+ assert.equal(f.reader.snapshot().modelRequestIdentityAvailable,true);assert.equal(f.reader.snapshot().requests,2);
+});
+
+test('idle resubscription preserves the compaction baseline and observed cadence',async t=>{
+ const f=fixture('codex');t.after(()=>f.reader.close());await f.reader.open();
+ const turn=(id,input)=>({id:'turn',providerThreadId:f.provider.id,ordinal:1,runAttemptId:'attempt',tokenUsage:{modelRequestId:id,inputTokens:input,usedTokens:input,maxTokens:200000,updatedAt:stamp}});
+ f.event('provider-turn.updated',turn('one',1000));f.event('provider-turn.updated',turn('two',2000));
+ f.frame({kind:'snapshot',snapshotSequence:f.nextSequence(),projection:{...f.projection,providerTurns:[turn('two',2000)]}});
+ assert.equal(f.reader.snapshot().baselineInputTokens,1000);assert.equal(f.reader.snapshot().requestsSinceCompaction,2);
+});

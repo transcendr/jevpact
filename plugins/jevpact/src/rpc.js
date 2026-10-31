@@ -9,7 +9,7 @@ export function call(message, { timeout = 1500, socket = socketPath() } = {}) {
     client.once('connect', () => client.write(JSON.stringify(message) + '\n'));
     client.on('data', chunk => {
       data += chunk.toString();
-      if (data.length > 128000) return client.destroy(new Error('Oversized reply'));
+      if (message.method !== 'status' && data.length > 128000) return client.destroy(new Error('Oversized reply'));
       if (!data.includes('\n')) return;
       clearTimeout(timer);
       client.end();

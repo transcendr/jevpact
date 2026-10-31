@@ -18,7 +18,7 @@ export const defaultSocketPath = () => process.env.JEVPACT_SOCKET_PATH
 
 export function healthFailure(status, expectedVersion, expectedThreads) {
   if (!expectedVersion) return 'Installed Jevpact package is unavailable';
-  if (!status?.running || status.mode !== 'automatic') return 'Jevpact controller is not responding';
+  if (!status?.running || status.source?.kind !== 't3' && status.mode !== 'automatic') return 'Jevpact controller is not responding';
   if (status.runtime?.version !== expectedVersion) return 'Jevpact is running a different installed version';
   for (const id of expectedThreads) {
     const thread = status.threads?.find(item => item.sessionId === id);
@@ -35,7 +35,7 @@ export function readStatus(socketPath = defaultSocketPath()) {
     const client = net.createConnection(socketPath);
     let data = '';
     const timer = setTimeout(() => client.destroy(new Error('Jevpact status timed out')), 3000);
-    client.once('connect', () => client.write('{"method":"status"}\n'));
+    client.once('connect', () => client.write(JSON.stringify({method:'status', ...(process.env.JEVPACT_T3_PROFILE ? {summary:true} : {})}) + '\n'));
     client.on('data', chunk => {
       data += chunk.toString();
       if (data.length > 128000) return client.destroy(new Error('Oversized status reply'));

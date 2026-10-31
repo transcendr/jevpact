@@ -235,6 +235,9 @@ export class Controller extends EventEmitter {
         return;
       }
       if (this.config.mode === 'off') { this.skip('configuration-off', s); return; }
+      if (!this.pending && s.modelRequestIdentityAvailable === false) {
+        this.skip('model-request-identity-unavailable', s); return;
+      }
       if (!this.pending && this.codex.canMaintainAutomatically?.(s.sessionId) === false) {
         this.skip('t3-writes-not-enabled', s); return;
       }
@@ -334,6 +337,7 @@ export class Controller extends EventEmitter {
       this.evaluation = null;
       this.busy = false;
       this.applyDeferredConfig();
+      if (!this.pending) this.emit('quiescent');
       if (this.needsWake && !this.closed) { this.needsWake = false; this.wake(); }
     }
   }

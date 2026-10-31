@@ -51,6 +51,8 @@ export class T3State {
     if (projection?.thread?.id !== this.threadId || !validNumber(snapshotSequence)) {
       this.disable('t3-thread-identity-mismatch'); return;
     }
+    const measurements = new Map(this.measurements);
+    const compactionTimes = new Map(this.compactionTimes);
     this.thread = projection.thread;
     this.historyCursor = historyCursor ?? null;
     this.historyComplete = hasMoreHistory === false || historyCursor === null;
@@ -65,6 +67,13 @@ export class T3State {
     this.measurements.clear();
     this.disabledReason = null;
     for (const { name, record } of entries) this.store(name, record);
+    for (const [id, previous] of measurements) {
+      const current = this.measurements.get(id);
+      if (current && compactionTimes.get(id) === this.compactionTimes.get(id)) {
+        current.baseline = previous.baseline;
+        current.growth = Math.max(0, current.input - previous.input);
+      }
+    }
     this.afterSequence = snapshotSequence;
   }
 
@@ -157,7 +166,7 @@ export class T3State {
     const provider = providerThreads.get(run?.providerThreadId ?? this.thread?.activeProviderThreadId);
     const turns = list(providerTurns).filter(item => item.providerThreadId === provider?.id);
     const turn = turns.sort((a, b) => a.ordinal - b.ordinal).at(-1);
-    const work = ordered.findLast(item => !maintenance(messages.get(item.userMessageId)));
+    const work = ordered.findLast(item => item.status !== 'queued' && !maintenance(messages.get(item.userMessageId)));
     return { run, provider, turn, work,
       isMaintenance: !!run && maintenance(messages.get(run.userMessageId)) };
   }
@@ -265,6 +274,7 @@ export class T3State {
       compactionGeneration: compactions.length, compactionItemId: latestCompaction?.id ?? null,
       compactionCompletedAt: latestCompaction?.completedAt ?? null,
       ...this.requestCounts(provider?.id),
+      modelRequestIdentityAvailable: typeof usage?.modelRequestId === 'string' && !!usage.modelRequestId.trim(),
       inputTokens, modelContextWindow: validNumber(usage?.maxTokens) && usage.maxTokens > 0 ? usage.maxTokens : null,
       contextUsedTokens: usageIsCurrent && validNumber(usage?.usedTokens) ? usage.usedTokens : null,
       baselineInputTokens: inputTokens == null ? null : this.measurements.get(provider?.id)?.baseline ?? null,

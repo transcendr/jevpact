@@ -196,3 +196,12 @@ test('T3 per-thread overrides round-trip through saved configuration and isolate
   await configCommand(['set', 'minGrowthTokens', '0', '--thread', key], { file, reload: async () => ({ reloaded: true }) });
   assert.equal(resolveConfig(await readConfig(file), {threadId: key}).settings.minGrowthTokens, 0);
 });
+
+test('explicit T3 profiles isolate configuration from every Codex Desktop profile', () => {
+  const previous = process.env.JEVPACT_T3_PROFILE;
+  try {
+    process.env.JEVPACT_T3_PROFILE='disposable-proof';
+    assert.match(configDirectory(),/\.jevpact-t3-disposable-proof$/);
+    process.env.JEVPACT_T3_PROFILE='../desktop';assert.throws(()=>configDirectory(),/T3 profile/);
+  } finally { if(previous===undefined)delete process.env.JEVPACT_T3_PROFILE;else process.env.JEVPACT_T3_PROFILE=previous; }
+});

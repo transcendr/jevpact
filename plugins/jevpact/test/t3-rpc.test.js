@@ -64,3 +64,18 @@ test('server ambiguity code keeps the uncertain-delivery flag', async t => {
   f.reply({ _tag: 'Failure', cause: { reasons: [{ error: { code: 'maintenance-ambiguous-delivery' } }] } });
   await assert.rejects(action, { code: 'maintenance-ambiguous-delivery', ambiguous: true });
 });
+
+test('shell and thread streams share one authenticated socket and unsubscribe separately', async t => {
+  const f=fixture(t);const frames=[];const shell=f.rpc.subscribe('orchestration.subscribeShell',{}, {onFrame:x=>frames.push(x),onDisconnect(){}});await turn();
+  const shellRequest=f.requests[0];f.sockets[0].receive({_tag:'Chunk',requestId:shellRequest.id,values:[{kind:'synchronized'}]});const unsubscribe=await shell;
+  const thread=f.rpc.subscribe('orchestration.subscribeThread',{threadId:'one'}, {onFrame:x=>frames.push(x),onDisconnect(){}});await turn();
+  const threadRequest=f.requests.find(r=>r.tag==='orchestration.subscribeThread');f.sockets[0].receive({_tag:'Chunk',requestId:threadRequest.id,values:[{kind:'synchronized'}]});await thread;
+  assert.equal(f.sockets.length,1);unsubscribe();assert.equal(f.rpc.streams.size,1);assert(f.requests.some(r=>r._tag==='Interrupt'&&r.requestId===shellRequest.id));
+});
+
+
+test('actual Effect RPC failure arrays preserve definite guard and authorization rejections',async t=>{
+ const f=fixture(t);const result=f.rpc.request('orchestration.dispatchCommand',{}, {mutation:true});await turn();
+ f.reply({_tag:'Failure',cause:[{_tag:'Fail',error:{_tag:'OrchestrationV2DispatchCommandError',code:'maintenance-busy'}}]});
+ await assert.rejects(result,{code:'maintenance-busy',ambiguous:false});
+});

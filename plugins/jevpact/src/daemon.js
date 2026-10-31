@@ -13,7 +13,7 @@ import { call } from './rpc.js';
 import { resolveKey } from './credentials.js';
 import { readConfig, resolveConfig, projectIdentity, configPath, CONFIG_REATTACH_KEYS, CONFIG_RESTART_KEYS } from './config.js';
 
-export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0, transport, readerFactory, onDecision, decisionPolicy = decide } = {}) {
+export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0, transport, readerFactory, onDecision, decisionPolicy = decide, onQuiescent } = {}) {
   apiKey ||= await resolveKey();
   if (!apiKey) throw Object.assign(new Error('Set JEV_TEST_KEY or JEV_API_KEY before starting Jevpact'), { code: 'missing-key' });
   const directory = await ensureRuntime();
@@ -79,7 +79,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   };
   const threads = new Map();
   const attaching = new Map();
-  const remember = onlyThreads.length === 0;
+  const remember = source.remember !== false && onlyThreads.length === 0;
   if (readerFactory && !/^[a-zA-Z0-9_-]+$/.test(source.namespace ?? '')) throw new Error('Injected reader namespace is required');
   const watchListName = readerFactory ? `watched-threads.${source.namespace}.json` : 'watched-threads.json';
   const watchListPath = path.join(remember ? await ensureState() : directory, watchListName);
@@ -148,7 +148,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
         attempt.reader = reader;
         await reader.open(state.rolloutPath);
         if (closing || attempt.cancelled) return null;
-        if (!reader.snapshot().supported) throw Object.assign(new Error('Unsupported transcript'), { code: reader.snapshot().disabledReason });
+        if (!reader.snapshot().supported && source.allowUnsupported !== true) throw Object.assign(new Error('Unsupported transcript'), { code: reader.snapshot().disabledReason });
         if (reader.snapshot().sessionId !== id) throw Object.assign(new Error('Reader identity mismatch'), { code: 'reader-identity-mismatch' });
         if (!readerFactory || codex.capabilities?.explicitMaintenance) codex.bindReader(id, reader, { allowWrites });
         const controller = new Controller({ reader, codex, config: settings,
@@ -156,6 +156,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
           evaluate: (packet, { signal, purpose, onRequest }) => evaluate(packet, { apiKey, signal, purpose, onRequest }), decide: decisionPolicy });
         controller.on('diagnostic', event => retain(id, event));
         if (onDecision) controller.on('decision', decision => onDecision(id, decision));
+        if (onQuiescent) controller.on('quiescent', () => onQuiescent(id));
         const entry = { id, cwd: state.cwd, reader, controller, settings, resolved, configState: null,
           allowWrites: allowWrites === true && codex.capabilities?.explicitMaintenance === true,
           hookCounts: {}, lastHook: null };
@@ -192,12 +193,15 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   };
   const dispatch = async request => {
     touch();
+    if (request.method === 'detach') { await closeThread(request.threadId); return { detached: true }; }
     if (request.method === 'status') return { running: true, pid: process.pid, runtime, lastAttachmentFailure,
       configPath: configPath(),
       history: { ...historyOptions, available: !!history, failure: historyFailure },
-      restoring: restoringCount,
+      restoring: restoringCount + (source.restoring?.() ?? 0),
       mode: source.observationOnly && ![...threads.values()].some(e => e.allowWrites && e.settings.mode === 'automatic') ? 'observe' : 'automatic',
-      threads: [...threads.values()].map(e => ({ ...e.controller.view(),
+      source: source.status?.() ?? null,
+      threads: (request.summary ? [] : [...threads.values()]).map(e => ({ ...e.controller.view(),
+        ...(source.describe?.(e.id, e.reader.snapshot(), e.settings) ?? {}),
         configState: e.configState && { ...e.configState, deferred: !!e.controller.nextConfig },
         matchedProject: e.resolved.matchedProject,
         allowWrites: e.allowWrites, observationMode: e.reader.snapshot().observationMode, watchError: e.reader.snapshot().watchError,
@@ -307,6 +311,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   async function close() {
     if (closing) return;
     closing = true;
+    await source.close?.();
     clearTimeout(timer);
     for (const attempt of attaching.values()) {
       attempt.cancelled = true;
@@ -337,5 +342,5 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   process.send?.({ ready: true });
   process.once('SIGINT', close);
   process.once('SIGTERM', close);
-  return { server, close, dispatch, restored };
+  return { server, close, dispatch, restored, attach, detach: closeThread, getThread: id => threads.get(id) };
 }

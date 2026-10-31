@@ -34,6 +34,21 @@ The install command saves the key in a private user file, installs two macOS Lau
 
 [Installation details](docs/install.md) explain what Codex copies, where the service runs, key storage, updates, and removal.
 
+## T3 Code
+
+A separate macOS T3 service supports Codex and Claude threads. It discovers threads automatically, saves explicit write consent across restarts, and remains read-only when the T3 server lacks guarded maintenance support. It does not replace the Codex Desktop service. T3 must also use a Codex provider home without the Desktop Jevpact hooks; that provider isolation remains unverified.
+
+```sh
+node plugins/jevpact/bin/jevpact.js t3 install --profile local-t3 \
+  --runtime-file /absolute/path/to/t3-home/userdata/server-runtime.json \
+  --token-file /absolute/path/to/private/t3-token \
+  --jev-key-file /absolute/path/to/private/jev-key \
+  --allow-writes
+node plugins/jevpact/bin/jevpact.js t3 status --profile local-t3
+```
+
+Both credential files must be private, owned by you, and mode 0600. Omit `--allow-writes` for read-only setup. [T3 setup and operation](docs/t3-transport.md) covers credentials, remote origins, stop/start, updates, configuration and removal.
+
 ## What it does
 
 1. Trusted hooks send task and lifecycle identities to a local controller. The controller reads the local rollout incrementally and keeps a bounded view of recent visible work.

@@ -6,7 +6,17 @@ import { call } from '../src/rpc.js';
 const args = process.argv.slice(2);
 const command = args.shift();
 try {
-  if (command === 'hook') {
+  if (command === 't3') {
+    if (!args.length || ['help','--help','-h'].includes(args[0]) || args[1] === '--help') {
+      console.log((await import('../src/t3-cli.js')).T3_HELP);
+    } else {
+      const at = args.indexOf('--profile');
+      if (at < 0 || !args[at + 1]) throw new Error('T3 commands require --profile NAME');
+      process.env.JEVPACT_T3_PROFILE = args[at + 1]; args.splice(at, 2);
+      delete process.env.JEVPACT_CONFIG_HOME; delete process.env.JEVPACT_HISTORY_DIR;
+      const { t3Command } = await import('../src/t3-cli.js'); await t3Command(args);
+    }
+  } else if (command === 'hook') {
     let input = '';
     for await (const chunk of process.stdin) {
       input += chunk;
@@ -135,7 +145,7 @@ try {
     await call({ method: 'stop' });
     console.log('Jevpact stopped. Native Codex compaction remains available.');
   } else {
-    console.log('Usage: jevpact start [--thread ID] [--config FILE] | status [--json] | attach ID | stop\n       jevpact config help | list | show | set | reset | clear | reattach | profile\n       jevpact service install|update [--expect-thread ID | --clear-expected] [--node ABSOLUTE_PATH] | status [--json] | uninstall\n       jevpact history TASK_ID [--since ISO] [--event EVENT] [--after ID] [--limit N] [--json]\n       jevpact history --stats | --all [--json]\nHistory: rolling 30 days, 5 GB total; --json streams full records as JSONL. --directory selects a custom history store.\nSet JEV_TEST_KEY or JEV_API_KEY. Managed service installation stores the key in a private user file.\nPlugin hooks must be trusted using Codex /hooks.');
+    console.log('Usage: jevpact t3 install|start|stop|status|uninstall --profile NAME\n       jevpact start [--thread ID] [--config FILE] | status [--json] | attach ID | stop\n       jevpact config help | list | show | set | reset | clear | reattach | profile\n       jevpact service install|update [--expect-thread ID | --clear-expected] [--node ABSOLUTE_PATH] | status [--json] | uninstall\n       jevpact history TASK_ID [--since ISO] [--event EVENT] [--after ID] [--limit N] [--json]\n       jevpact history --stats | --all [--json]\nHistory: rolling 30 days, 5 GB total; --json streams full records as JSONL. --directory selects a custom history store.\nSet JEV_TEST_KEY or JEV_API_KEY. Managed service installation stores the key in a private user file.\nPlugin hooks must be trusted using Codex /hooks.');
     if (command && !['help', '--help', '-h'].includes(command)) process.exitCode = 1;
   }
 } catch (error) {

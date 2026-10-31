@@ -263,3 +263,16 @@ test('detachment during the capability read prevents the pending socket mutation
   f.transport.unbindReader('thread', f.reader); release();
   await assert.rejects(action, { code: 'stale-action' }); assert.equal(f.commands.length, 0);
 });
+
+
+test('loss of the current native request identity blocks policy writes even with historical cadence',async t=>{
+ const f=fixture(t);const c=automaticController(t,f);f.reader.s.modelRequestIdentityAvailable=false;
+ await c.tick();assert.equal(f.commands.length,0);assert.equal(c.pending,null);
+});
+
+
+test('automatic active maintenance waits if the connected server lacks active pause support',async t=>{
+ const f=fixture(t);const c=automaticController(t,f);f.transport.activePause=false;
+ await c.tick();assert.equal(f.commands.length,0);assert.equal(c.pending,null);
+ f.reader.s.turnStatus='idle';assert.equal(f.transport.canMaintainAutomatically('thread'),true);
+});

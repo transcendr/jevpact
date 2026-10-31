@@ -31,7 +31,8 @@ export class T3Transport extends EventEmitter {
 
   canMaintainAutomatically(threadId) {
     const binding = this.readers.get(threadId);
-    return binding?.allowWrites === true && !binding.reader.closed;
+    return binding?.allowWrites === true && !binding.reader.closed
+      && (this.activePause !== false || binding.reader.snapshot().turnStatus !== 'active');
   }
 
   unbindReader(threadId, reader) {

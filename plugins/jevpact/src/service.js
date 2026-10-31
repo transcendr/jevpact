@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, cp, mkdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -134,8 +134,8 @@ async function readServiceConfig() {
   return config;
 }
 
-async function stageRuntime(sourceRoot, version) {
-  const target = runtimePath(version);
+async function stageRuntime(sourceRoot, version, suffix = '') {
+  const target = runtimePath(version + suffix);
   const existing = await readOptional(path.join(target, '.codex-plugin', 'plugin.json'));
   if (existing) {
     if (JSON.parse(existing).version !== version) throw new Error('Installed runtime version mismatch');
@@ -156,7 +156,7 @@ async function stageRuntime(sourceRoot, version) {
   return target;
 }
 
-export async function installService({ sourceRoot, expectedThreads, nodePath } = {}) {
+export async function installService({ sourceRoot, expectedThreads, nodePath, serveArgs = ['serve'], environment, runtimeSuffix = '', apiKeyFile, preferStoredKey = false } = {}) {
   if (process.platform !== 'darwin') throw new Error('The managed service is currently supported on macOS only');
   if (!sourceRoot || !path.isAbsolute(sourceRoot)) throw new Error('An absolute plugin path is required');
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
@@ -172,21 +172,23 @@ export async function installService({ sourceRoot, expectedThreads, nodePath } =
   if (!nodeVersion || Number(nodeVersion[1]) < 22 || Number(nodeVersion[1]) === 22 && Number(nodeVersion[2]) < 13) {
     throw new Error('Jevpact requires Node.js 22.13 or later');
   }
-  const freshKey = await resolveKey({ keyPath: null });
+  const stored = preferStoredKey ? await readStoredKey() : '';
+  const freshKey = apiKeyFile ? await readStoredKey(apiKeyFile) : stored ? '' : await resolveKey({ keyPath: null });
+  if (apiKeyFile && !freshKey) throw new Error('The private Jev credential file is missing or empty');
   if (!freshKey && !await readStoredKey()) throw new Error('Set JEV_API_KEY or JEV_TEST_KEY before installing the service');
   const sourceProbe = await readFile(path.join(sourceRoot, 'bin', 'jevpact-health.js'), 'utf8');
   const directory = await ensureState();
-  const runtimeRoot = await stageRuntime(sourceRoot, version);
+  const runtimeRoot = await stageRuntime(sourceRoot, version, runtimeSuffix);
   const agents = path.join(os.homedir(), 'Library', 'LaunchAgents');
   await mkdir(agents, { recursive: true, mode: 0o700 });
   const old = {};
   for (const label of Object.values(serviceLabels)) old[label] = await readOptional(agentPath(label));
   const controller = servicePlist({ label: serviceLabels.controller,
-    args: [node, path.join(runtimeRoot, 'bin', 'jevpact.js'), 'serve'],
-    errorPath: path.join(directory, 'controller.stderr.log'), environment: { CODEX_HOME: codexHome() } });
+    args: [node, path.join(runtimeRoot, 'bin', 'jevpact.js'), ...serveArgs],
+    errorPath: path.join(directory, 'controller.stderr.log'), environment: environment ?? { CODEX_HOME: codexHome() } });
   const health = servicePlist({ label: serviceLabels.health,
     args: [node, probePath(), '--plugin', runtimeRoot, ...ids.flatMap(id => ['--expect-thread', id])], interval: 60,
-    errorPath: path.join(directory, 'health.stderr.log'), environment: { CODEX_HOME: codexHome(),
+    errorPath: path.join(directory, 'health.stderr.log'), environment: { ...(environment ?? { CODEX_HOME: codexHome() }),
       JEVPACT_HEALTH_STATE_PATH: path.join(directory, 'health-state.json'), JEVPACT_SOCKET_PATH: socketPath() } });
   let previousPid = null;
   try { previousPid = (await call({ method: 'status' }, { timeout: 1000 })).pid; }
@@ -255,4 +257,29 @@ export async function uninstallService() {
   }
   await rm(path.join(stateDir(), 'runtime'), { recursive: true, force: true });
   return { removed: true, retainedData: stateDir() };
+}
+
+export async function stopService() {
+  const previous = await call({ method: 'status' }).catch(() => null);
+  await bootout(serviceLabels.health); await bootout(serviceLabels.controller);
+  if (previous) { await call({ method: 'stop' }).catch(() => {}); await waitForControllerStop(previous.pid); }
+  return { stopped: true };
+}
+
+export async function startService() {
+  const config = await readServiceConfig();
+  if (!config) throw new Error('Install the service first');
+  await bootstrap(serviceLabels.controller);
+  const status = await waitForVersion(config.version);
+  await bootstrap(serviceLabels.health);
+  return status;
+}
+
+export async function runtimeFingerprint(root) {
+  const hash = createHash('sha256');
+  for (const directory of ['src', 'bin']) for (const name of (await readdir(path.join(root, directory))).sort()) {
+    if (!name.endsWith('.js')) continue;
+    hash.update(directory + '/' + name); hash.update(await readFile(path.join(root, directory, name)));
+  }
+  return hash.digest('hex');
 }

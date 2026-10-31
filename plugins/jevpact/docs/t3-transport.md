@@ -1,36 +1,68 @@
-# T3 guarded maintenance
+# Jevpact on T3 Code
 
-`T3Reader` remains read-only. `T3Transport` adds automatic and explicit maintenance for a T3 server advertising `guardedMaintenance: 1`. Both use authenticated protocol-2 connections to the same environment. Automatic cadence counts distinct native model-request IDs: Codex response IDs from canonical usage records in the rollout path returned by the native thread API, and Claude message IDs shared by streaming and snapshot updates. Active pause additionally requires `guardedMaintenanceActivePause: true`. A server without that flag can perform guarded idle maintenance but receives no active pause from this adapter.
+The macOS T3 service runs alongside the Codex Desktop service. Every command requires a named T3 profile. Its LaunchAgents, socket, installed runtime, credentials, configuration and history are separate from Desktop, including when `CODEX_HOME` is set.
 
-Import the components into a host that owns its Jevpact daemon. Supply the actual T3 origin, environment ID, project root, and a credential callback reading a private credential file. Keep credentials out of configuration, logs, command arguments, and source:
+## Install and run
 
-```js
-import { readFile } from 'node:fs/promises';
-import { serve } from '../src/daemon.js';
-import { createT3ReaderFactory } from '../src/t3-reader.js';
-import { T3Transport } from '../src/t3-transport.js';
+Before running alongside Desktop, give T3's Codex provider a separate authenticated Codex home that does not load the Desktop Jevpact hooks. The service profile isolates Jevpact's own paths; it does not change the provider home or global hooks loaded by T3. Provider-hook isolation remains unverified in this handoff.
 
-const connection = {
-  origin,
-  environmentId,
-  projectRoot,
-  token: async () => (await readFile(privateCredentialPath, 'utf8')).trim(),
-};
-const daemon = await serve({
-  readerFactory: createT3ReaderFactory(connection),
-  transport: new T3Transport(connection),
-});
+Use Node.js 22.13 or later. Have the T3 server running and obtain a bearer credential for that environment with permission to observe threads and, for automatic maintenance, dispatch guarded maintenance. Put the raw T3 credential and Jev API key in separate files owned by you, with mode 0600. Pass file paths; never put secret values in arguments or configuration.
+
+From this repository:
+
+```sh
+node plugins/jevpact/bin/jevpact.js t3 install --profile local-t3 \
+  --runtime-file /absolute/path/to/t3-home/userdata/server-runtime.json \
+  --token-file /absolute/path/to/private/t3-token \
+  --jev-key-file /absolute/path/to/private/jev-key \
+  --allow-writes
+node plugins/jevpact/bin/jevpact.js t3 status --profile local-t3
 ```
 
-This is a programmatic adapter. The existing CLI and managed desktop service retain their Codex Desktop setup. The daemon socket is scoped by `CODEX_HOME`; use a separately selected profile when running a T3 daemon alongside a desktop daemon. Check `alreadyRunning` before issuing requests so an existing daemon is not mistaken for this one.
+`--runtime-file` discovers the origin from T3's runtime metadata and refreshes it on reconnection. For a remote server, use `--origin https://your-t3-origin` instead. The environment ID is discovered from the authenticated server and pinned to the profile. A different environment requires another profile. This service connects directly to that origin; relay pairing is outside this adapter.
 
-Each new or restored attachment defaults to read-only. Grant writes explicitly for that attachment:
+Omit `--allow-writes` for read-only setup. Consent is saved across daemon restarts and updates. `t3 update --read-only --profile local-t3` revokes it. Every connection checks server support again, and each maintenance operation also checks it. A server without guarded maintenance remains read-only even with saved consent. Status explains this; the adapter never substitutes ordinary messages for missing maintenance support.
 
-```js
-await daemon.dispatch({ method: 'attach', threadId, allowWrites: true });
+```sh
+node plugins/jevpact/bin/jevpact.js t3 stop --profile local-t3
+node plugins/jevpact/bin/jevpact.js t3 start --profile local-t3
+node plugins/jevpact/bin/jevpact.js t3 update --profile local-t3
+node plugins/jevpact/bin/jevpact.js t3 status --profile local-t3 --json
+node plugins/jevpact/bin/jevpact.js t3 uninstall --profile local-t3
 ```
 
-An existing attachment keeps its original grant. To change it, use `reattach` with an explicit `allowWrites: true`; omit that flag to return to read-only. Reattachment refuses while a controller operation is pending. Grants are not saved or restored across daemon restarts. Status exposes `allowWrites`. Write-enabled attachments use their resolved mode, including automatic policy by default. Read-only attachments remain in observation mode. Explicit observe/off settings and configuration reloads preserve their normal meaning.
+Installation copies both credentials into the profile's private state directory. Later starts and updates use those files. Supply `--token-file` or `--jev-key-file` again to rotate a credential. Uninstall removes both LaunchAgents, the staged runtimes and the stored credentials; diagnostic history and policy settings remain in the T3 profile. It does not uninstall Desktop Jevpact.
+
+The labels are `com.slopware.jevpact.t3-PROFILE.controller` and `.health`. State is in `~/Library/Application Support/Jevpact-t3-PROFILE`; policy settings are in `~/.jevpact-t3-PROFILE/config.json`. The socket uses a profile-derived hash to fit macOS Unix socket paths. T3 commands ignore ambient Desktop config/history overrides.
+
+## Attachment, settings and status
+
+The service tracks all unarchived threads in the configured environment. Codex and Claude assignments enter detailed observation when they run. Archive and delete remove attachments. Other providers and subagent children appear as ineligible; children remain managed through their parent. T3 restart reconnects without a daemon restart and checks the pinned environment and capabilities again.
+
+One authenticated RPC socket carries a global shell stream and the detailed streams for active work. Idle threads retain their observed state without a detailed stream. A detailed stream remains open through a pending maintenance cycle, then closes when the controller is quiescent. This avoids a socket or live server subscription per idle thread while preserving request cadence and compaction baselines across turns. T3's marked project-metadata refreshes do not replace the thread catalog.
+
+Plain status lists each attachment and explains read-only, disabled, missing request identity, missing usage, insufficient cadence or growth, unsupported provider, and recovery states. JSON status also exposes profile paths, consent, capabilities, detailed-subscription count, and per-thread configuration keys. If the latest usage lacks a native request ID, automatic policy is ineligible until identified usage arrives. Historical request counts do not authorize a decision on unidentified current usage.
+
+Use the existing settings mechanism with a raw T3 thread ID or an absolute project path:
+
+```sh
+node plugins/jevpact/bin/jevpact.js t3 config set mode off \
+  --thread THREAD_ID --profile local-t3
+node plugins/jevpact/bin/jevpact.js t3 config clear \
+  --thread THREAD_ID --profile local-t3
+node plugins/jevpact/bin/jevpact.js t3 config set mode off \
+  --project /absolute/path/to/workspace --profile local-t3
+node plugins/jevpact/bin/jevpact.js t3 config clear \
+  --project /absolute/path/to/workspace --profile local-t3
+```
+
+The CLI scopes thread IDs to the profile's environment. `current` selectors are unavailable on T3; they belong to the Desktop host. Off and observe settings retain their usual meanings and reload without a service restart.
+
+## Guarded transport API
+
+`T3Reader` remains read-only. Programmatic hosts can still construct `createT3ReaderFactory`, `T3Transport` and `serve`. Their explicit attachment grants default to read-only; the managed T3 service restores setup consent when it discovers threads. A programmatic host owns its own discovery and consent persistence.
+
+Automatic maintenance requires `guardedMaintenance: 1`. Active pause also requires `guardedMaintenanceActivePause: true`. Cadence counts distinct native request IDs: Codex response IDs from canonical usage records at the native thread's own rollout path, and Claude message IDs shared by streaming and snapshot updates.
 
 `maintain` remains available as an explicit request and returns its operation ID. Automatic mode starts the same guarded operation when the existing policy selects a checkpoint. Observe controller decisions and status for its outcome; that response is not delivery or completion. Active work on a server advertising active-pause support receives the existing pause message, then the genuine Jev pause assessment decides whether to compact and whether actionable work remains. Deferral can continue the assignment without compaction. Claude maintenance uses SDK priority `next` without interrupting foreground work or backgrounding subagents. Ordinary user steering retains priority `now`.
 
@@ -48,4 +80,6 @@ Stop, new direction, unavailable observation, and identity changes prevent conti
 
 Request counters cover native request IDs observed by this reader. A bounded initial snapshot exposes only the latest usage per provider turn, so attachment starts conservatively and does not invent missing historical requests. Repeated usage updates count once. Native child requests and compaction requests do not advance the root work cadence; completed compaction starts a fresh cadence. Context capacity comes from the selected model’s reported usage.
 
-T3 per-thread settings use `t3ConfigThreadId(environmentId, threadId)` exported by `src/config.js`. The reader factory exposes the same key as `factory.configThreadId(threadId)`, and the daemon resolves that key on attachment and configuration reload. Save overrides under `document.threads[key].settings` with the existing configuration API, or pass the key to `config set ... --thread KEY`. The key includes both environment and thread identity; it does not grant writes.
+Programmatic per-thread settings use `t3ConfigThreadId(environmentId, threadId)` exported by `src/config.js`. The reader factory exposes the same key as `factory.configThreadId(threadId)`, and the daemon resolves that key on attachment and configuration reload. Save overrides under `document.threads[key].settings` with the existing configuration API, or pass the key to `config set ... --thread KEY`. The key includes both environment and thread identity; it does not grant writes.
+
+The T3 Codex reader can still omit a final canonical usage record flushed after its last usage notification. Its current-turn filter drops that record when a later turn drains the file. Counts therefore remain conservative. Fixing this requires late usage to retain the completed provider turn's identity; the managed service does not infer request identities from usage values or event counts.

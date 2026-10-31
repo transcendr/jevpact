@@ -9,6 +9,7 @@ function rejection(cause, mutation) {
   const pending = [cause];
   while (pending.length) {
     const item = pending.pop();
+    if (Array.isArray(item)) { pending.push(...item); continue; }
     if (!item || typeof item !== 'object') continue;
     if (maintenanceCodes.has(item.code)) return t3Error(item.code, item.code === 'maintenance-ambiguous-delivery');
     if (item._tag === 'EnvironmentAuthorizationError') return t3Error('t3-authorization-failed');
@@ -26,7 +27,7 @@ export class T3Rpc {
     try { url = new URL(origin); } catch { throw t3Error('t3-invalid-origin'); }
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw t3Error('t3-invalid-origin');
     this.origin = url.origin; this.#token = token; this.fetch = fetch; this.WebSocket = WebSocket;
-    this.pending = new Map(); this.closed = false;
+    this.pending = new Map(); this.streams = new Map(); this.closed = false;
   }
 
   async credential() {
@@ -78,11 +79,19 @@ export class T3Rpc {
     this.socket = null;
     for (const request of this.pending.values()) request.reject(t3Error(code, request.mutation && request.sent));
     this.pending.clear();
+    const streams = [...this.streams.values()]; this.streams.clear();
+    for (const stream of streams) { stream.reject(t3Error(code)); stream.onDisconnect(t3Error(code)); }
   }
 
   handle(message, socket) {
     if (message._tag === 'Ping') { socket.send(JSON.stringify({ _tag: 'Pong' })); return; }
     if (message._tag === 'Defect') { this.fail(socket, 't3-protocol-failed'); socket.close(); return; }
+    const stream = this.streams.get(String(message.requestId));
+    if (stream) {
+      if (message._tag !== 'Chunk' || !Array.isArray(message.values)) throw t3Error('t3-subscription-ended');
+      for (const frame of message.values) { stream.onFrame(frame); if (frame.kind === 'synchronized') stream.resolve(); }
+      socket.send(JSON.stringify({ _tag: 'Ack', requestId: message.requestId })); return;
+    }
     const request = this.pending.get(String(message.requestId));
     if (!request) return;
     if (message._tag !== 'Exit') throw t3Error('t3-invalid-frame');
@@ -102,6 +111,20 @@ export class T3Rpc {
         this.socket.send(JSON.stringify({ _tag: 'Request', id, tag, payload, headers: [] }));
       } catch { this.pending.delete(id); reject(t3Error('t3-send-failed', mutation)); }
     });
+  }
+
+  async subscribe(tag, payload, { onFrame, onDisconnect }) {
+    await this.connect();
+    const id = randomUUID();
+    const ready = new Promise((resolve, reject) => this.streams.set(id, { resolve, reject, onFrame, onDisconnect }));
+    try {
+      this.socket.send(JSON.stringify({ _tag: 'Request', id, tag, payload, headers: [] }));
+      await ready;
+    } catch { this.streams.delete(id); throw t3Error('t3-subscription-failed'); }
+    return () => {
+      if (!this.streams.delete(id)) return;
+      this.socket?.send(JSON.stringify({ _tag: 'Interrupt', requestId: id }));
+    };
   }
 
   async history(threadId, cursor) {
