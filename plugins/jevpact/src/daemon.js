@@ -39,7 +39,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   if (readerFactory && source.observationOnly !== true) throw new Error('Injected readers must be observation-only');
   let savedConfig = await readConfig();
   const effectiveFor = (state, allowWrites = false) => {
-    const resolved = resolveConfig(savedConfig, { threadId: state.threadId, cwd: state.cwd, base: config });
+    const resolved = resolveConfig(savedConfig, { threadId: source.configThreadId?.(state.threadId) ?? state.threadId, cwd: state.cwd, base: config });
     if (source.observationOnly && resolved.settings.mode !== 'off'
       && (allowWrites !== true || codex.capabilities?.automatic !== true || codex.capabilities?.explicitMaintenance !== true)) resolved.settings = { ...resolved.settings, mode: 'observe' };
     return resolved;

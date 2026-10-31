@@ -358,7 +358,10 @@ test('T3 writes require explicit attachment opt-in and reattachment clears that 
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, true);
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].mode, 'automatic');
   assert.equal((await daemon.dispatch({ method: 'status' })).mode, 'automatic');
-  await daemon.dispatch({ method: 'reload-config' });
+  const scoped = emptyConfig(); scoped.threads[readerFactory.configThreadId(threadId)] = { settings: { mode: 'off' } };
+  await writeConfig(scoped); await daemon.dispatch({ method: 'reload-config' });
+  assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].mode, 'off');
+  await writeConfig(emptyConfig()); await daemon.dispatch({ method: 'reload-config' });
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].mode, 'automatic');
   await daemon.dispatch({ method: 'reattach', threadId });
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, false);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_GLOBAL_PROFILE, configDirectory, emptyConfig, readConfig, writeConfig, resolveConfig, validateConfig, projectIdentity } from '../src/config.js';
+import { DEFAULT_GLOBAL_PROFILE, configDirectory, emptyConfig, readConfig, writeConfig, resolveConfig, validateConfig, projectIdentity, t3ConfigThreadId } from '../src/config.js';
 import { configCommand } from '../src/config-cli.js';
 
 async function fixture(t) {
@@ -182,4 +182,17 @@ test('message templates validate at save time and the CLI lists supported tokens
     'Continue from {{assistant.lastBeforeCompaction}}.');
   await assert.rejects(cli(['set', 'resumeMessage', '{{compaction.recordText}}', '--global']), /native compaction content is encrypted/);
   await assert.rejects(cli(['set', 'pauseMessage', '{{unknown.token}}', '--global']), /unknown message token/);
+});
+
+
+test('T3 per-thread overrides round-trip through saved configuration and isolate environments', async t => {
+  const { file } = await fixture(t);
+  const key = t3ConfigThreadId('environment-a', 'mcp:launch:disposable');
+  const document = emptyConfig(); document.threads[key] = { settings: { minInputTokens: 12345 } };
+  await writeConfig(document, file);
+  const loaded = await readConfig(file);
+  assert.equal(resolveConfig(loaded, {threadId: key}).settings.minInputTokens, 12345);
+  assert.notEqual(resolveConfig(loaded, {threadId: t3ConfigThreadId('environment-b', 'mcp:launch:disposable')}).settings.minInputTokens, 12345);
+  await configCommand(['set', 'minGrowthTokens', '0', '--thread', key], { file, reload: async () => ({ reloaded: true }) });
+  assert.equal(resolveConfig(await readConfig(file), {threadId: key}).settings.minGrowthTokens, 0);
 });

@@ -59,6 +59,12 @@ export const emptyConfig = () => ({ version: 1, global: { profile: DEFAULT_GLOBA
 
 function plain(value) { return value != null && typeof value === 'object' && !Array.isArray(value); }
 function own(value, key) { return Object.hasOwn(value, key); }
+export const t3ConfigThreadId = (environmentId, threadId) =>
+  `t3:${Buffer.from(environmentId).toString('base64url')}:${Buffer.from(threadId).toString('base64url')}`;
+export const validConfigThreadId = id => typeof id === 'string' &&
+  (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)
+    || /^t3:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+$/.test(id));
+
 function invalid(reason) { throw Object.assign(new Error(`Invalid Jevpact configuration: ${reason}`), { code: 'invalid-config' }); }
 function assertKeys(value, allowed, location) {
   if (!plain(value)) invalid(`${location} must be an object`);
@@ -118,7 +124,7 @@ export function validateConfig(document) {
     checkProfile(entry, `projects.${project}`, true);
   }
   for (const [thread, entry] of Object.entries(document.threads)) {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(thread)) invalid(`invalid thread ID ${thread}`);
+    if (!validConfigThreadId(thread)) invalid(`invalid thread ID ${thread}`);
     validateEntry(entry, `threads.${thread}`, true);
     checkProfile(entry, `threads.${thread}`, true);
   }

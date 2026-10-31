@@ -1,17 +1,16 @@
 import path from 'node:path';
 import { LocalState } from './local-state.js';
 import { call } from './rpc.js';
-import { SETTINGS, DEFAULT_GLOBAL_PROFILE, configPath, readConfig, writeConfig, resolveConfig, parseSetting, validateSetting, projectIdentity } from './config.js';
+import { SETTINGS, DEFAULT_GLOBAL_PROFILE, configPath, readConfig, writeConfig, resolveConfig, parseSetting, validateSetting, projectIdentity, validConfigThreadId } from './config.js';
 import { MESSAGE_TOKENS } from './message-template.js';
 
-const threadPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const profilePattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const fail = text => { throw new Error(text); };
 const own = (object, key) => Object.hasOwn(object, key);
 
 function currentThread() {
   const id = process.env.CODEX_THREAD_ID;
-  if (!threadPattern.test(id ?? '')) fail('The current native task ID is unavailable; use --thread NATIVE_TASK_ID.');
+  if (!validConfigThreadId(id)) fail('The current native task ID is unavailable; use --thread NATIVE_TASK_ID.');
   const state = new LocalState().locate(id);
   if (state.threadId !== id) fail('The current native task ID could not be verified.');
   return id;
@@ -29,7 +28,7 @@ function scopeArgs(args, { required = false } = {}) {
     else if (flag === '--current-thread') select({ kind: 'thread', id: currentThread() });
     else if (flag === '--thread') {
       const id = args[++i] === 'current' ? currentThread() : args[i];
-      if (!threadPattern.test(id ?? '')) fail('--thread requires a native task ID or current.');
+      if (!validConfigThreadId(id)) fail('--thread requires a native task ID, a T3 configuration key, or current.');
       select({ kind: 'thread', id });
     } else if (flag === '--project') {
       const requested = args[++i];

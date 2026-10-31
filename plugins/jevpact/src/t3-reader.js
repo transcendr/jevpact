@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { T3Subscription } from './t3-subscription.js';
 import { T3State } from './t3-state.js';
+import { t3ConfigThreadId } from './config.js';
 
 export const validT3ThreadId = id => typeof id === 'string' && id.length > 0 && id.trim() === id;
 
@@ -46,6 +47,7 @@ export function createT3ReaderFactory(options) {
     observationOnly: true,
     namespace: `t3-${Buffer.from(options.environmentId).toString('base64url')}`,
     validateThreadId: validT3ThreadId,
+    configThreadId: threadId => t3ConfigThreadId(options.environmentId, threadId),
     async locate(threadId) { return { threadId, cwd: options.projectRoot }; },
     create({ threadId }) { return new T3Reader({ ...options, threadId }); },
   };
