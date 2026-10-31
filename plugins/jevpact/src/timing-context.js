@@ -53,7 +53,7 @@ export function buildTimingPacket(snapshot) {
   const referential = !!currentUser && REFERENTIAL.test(currentUser.text);
   const prior = (snapshot.recentFinalReports ?? []).filter(item => item.turnId !== turnId).slice(-5);
   const packet = {
-    source: 'codex-visible-source-linked-timing',
+    source: snapshot.timingSource ?? 'codex-visible-source-linked-timing',
     currentTurnId: turnId,
     sourceRequests: (snapshot.recentUserRequests ?? []).filter(item => item.turnId !== turnId).slice(-1),
     currentUser,

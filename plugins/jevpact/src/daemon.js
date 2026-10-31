@@ -13,7 +13,7 @@ import { call } from './rpc.js';
 import { resolveKey } from './credentials.js';
 import { readConfig, resolveConfig, projectIdentity, configPath, CONFIG_REATTACH_KEYS, CONFIG_RESTART_KEYS } from './config.js';
 
-export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0, transport, onDecision, decisionPolicy = decide } = {}) {
+export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0, transport, readerFactory, onDecision, decisionPolicy = decide } = {}) {
   apiKey ||= await resolveKey();
   if (!apiKey) throw Object.assign(new Error('Set JEV_TEST_KEY or JEV_API_KEY before starting Jevpact'), { code: 'missing-key' });
   const directory = await ensureRuntime();
@@ -26,8 +26,23 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   } catch (e) { if (e.code !== 'ENOENT') throw e; }
 
   const codex = transport ?? new Codex();
+  const source = readerFactory ?? {
+    validateThreadId: id => /^[0-9a-f-]{36}$/.test(id ?? ''),
+    locate: id => codex.locate(id),
+    create({ threadId, location, settings, requestedPath }) {
+      if (!location.rolloutPath) throw Object.assign(new Error('Transcript unavailable'), { code: 'transcript-unavailable' });
+      if (requestedPath && requestedPath !== location.rolloutPath) throw Object.assign(new Error('Transcript identity mismatch'), { code: 'transcript-identity-mismatch' });
+      return new Transcript({ sessionId: threadId, controlPrefixes: [PAUSE_PREFIX, RESUME_PREFIX],
+        watch: settings.watchTranscript, allowHookFallback: settings.allowHookFallback, maxLineBytes: settings.maxLineBytes });
+    },
+  };
+  if (readerFactory && source.observationOnly !== true) throw new Error('Injected readers must be observation-only');
   let savedConfig = await readConfig();
-  const effectiveFor = state => resolveConfig(savedConfig, { threadId: state.threadId, cwd: state.cwd, base: config });
+  const effectiveFor = state => {
+    const resolved = resolveConfig(savedConfig, { threadId: state.threadId, cwd: state.cwd, base: config });
+    if (source.observationOnly) resolved.settings = { ...resolved.settings, mode: 'observe' };
+    return resolved;
+  };
   const globalSettings = resolveConfig(savedConfig, { base: config }).settings;
   const runtime = { root: fileURLToPath(new URL('../', import.meta.url)),
     version: JSON.parse(await readFile(new URL('../.codex-plugin/plugin.json', import.meta.url), 'utf8')).version };
@@ -64,8 +79,10 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   const threads = new Map();
   const attaching = new Map();
   const remember = onlyThreads.length === 0;
-  const watchListPath = path.join(remember ? await ensureState() : directory, 'watched-threads.json');
-  const legacyWatchListPath = path.join(directory, 'watched-threads.json');
+  if (readerFactory && !/^[a-zA-Z0-9_-]+$/.test(source.namespace ?? '')) throw new Error('Injected reader namespace is required');
+  const watchListName = readerFactory ? `watched-threads.${source.namespace}.json` : 'watched-threads.json';
+  const watchListPath = path.join(remember ? await ensureState() : directory, watchListName);
+  const legacyWatchListPath = path.join(directory, watchListName);
   let remembered = new Set();
   let migratedWatchList = false;
   if (remember) {
@@ -78,7 +95,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
         migratedWatchList = true;
       }
       const ids = JSON.parse(contents);
-      if (!Array.isArray(ids) || ids.some(id => !/^[0-9a-f-]{36}$/.test(id))) throw new Error('Invalid remembered task list');
+      if (!Array.isArray(ids) || ids.some(id => !source.validateThreadId(id))) throw new Error('Invalid remembered task list');
       remembered = new Set(ids);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -102,13 +119,13 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   const touch = () => { if (!closing && idleMs > 0) { clearTimeout(timer); timer = setTimeout(() => close(), idleMs); } };
   const closeThread = async id => {
     const attempt = attaching.get(id);
-    if (attempt) attempt.cancelled = true;
+    if (attempt) { attempt.cancelled = true; if (readerFactory) await attempt.reader?.close(); }
     const entry = threads.get(id);
     if (!entry) return;
     retain(id, { time: Date.now(), event: 'detached', reason: closing ? 'controller-stopped' : 'session-ended-or-replaced' });
     threads.delete(id);
     entry.controller.close();
-    codex.unbindReader(id, entry.reader);
+    if (!readerFactory) codex.unbindReader(id, entry.reader);
     await entry.reader.close();
   };
   const attach = async (id, requestedPath) => {
@@ -121,20 +138,18 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       let reader;
       let published = false;
       try {
-        const state = await codex.locate(id);
+        const state = await source.locate(id);
         if (closing || attempt.cancelled) return null;
-        if (!state.rolloutPath) throw Object.assign(new Error('Transcript unavailable'), { code: 'transcript-unavailable' });
-        if (requestedPath && requestedPath !== state.rolloutPath) throw Object.assign(new Error('Transcript identity mismatch'), { code: 'transcript-identity-mismatch' });
         attempt.path = state.rolloutPath;
         const resolved = effectiveFor({ threadId: id, cwd: state.cwd });
         const settings = resolved.settings;
-        reader = new Transcript({ sessionId: id, controlPrefixes: [PAUSE_PREFIX, RESUME_PREFIX],
-          watch: settings.watchTranscript, allowHookFallback: settings.allowHookFallback,
-          maxLineBytes: settings.maxLineBytes });
+        reader = source.create({ threadId: id, location: state, settings, requestedPath });
+        attempt.reader = reader;
         await reader.open(state.rolloutPath);
         if (closing || attempt.cancelled) return null;
         if (!reader.snapshot().supported) throw Object.assign(new Error('Unsupported transcript'), { code: reader.snapshot().disabledReason });
-        codex.bindReader(id, reader);
+        if (reader.snapshot().sessionId !== id) throw Object.assign(new Error('Reader identity mismatch'), { code: 'reader-identity-mismatch' });
+        if (!readerFactory) codex.bindReader(id, reader);
         const controller = new Controller({ reader, codex, config: settings,
           templateContext: { projectRoot: projectIdentity(state.cwd), profileName: resolved.profileName },
           evaluate: (packet, { signal, purpose, onRequest }) => evaluate(packet, { apiKey, signal, purpose, onRequest }), decide: decisionPolicy });
@@ -164,7 +179,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
         throw error;
       } finally {
         if (reader && !published) {
-          codex.unbindReader(id, reader);
+          if (!readerFactory) codex.unbindReader(id, reader);
           await reader.close();
         }
       }
@@ -179,7 +194,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       configPath: configPath(),
       history: { ...historyOptions, available: !!history, failure: historyFailure },
       restoring: restoringCount,
-      mode: 'automatic',
+      mode: source.observationOnly ? 'observe' : 'automatic',
       threads: [...threads.values()].map(e => ({ ...e.controller.view(),
         configState: e.configState && { ...e.configState, deferred: !!e.controller.nextConfig },
         matchedProject: e.resolved.matchedProject,
@@ -196,7 +211,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       let registryChanged = false;
       for (const entry of threads.values()) {
         const resolved = effectiveFor({ threadId: entry.id, cwd: entry.cwd });
-        const reattachRequired = CONFIG_REATTACH_KEYS.filter(key => {
+        const reattachRequired = readerFactory ? [] : CONFIG_REATTACH_KEYS.filter(key => {
           const readerKey = key === 'watchTranscript' ? 'watch' : key;
           return entry.reader.options[readerKey] !== resolved.settings[key];
         });
@@ -219,7 +234,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
     }
     if (request.method === 'stop') { setTimeout(close, 20); return { stopped: true }; }
     if (request.method === 'reattach') {
-      if (!/^[0-9a-f-]{36}$/.test(request.threadId ?? '')) throw new Error('Invalid thread ID');
+      if (!source.validateThreadId(request.threadId)) throw new Error('Invalid thread ID');
       const current = threads.get(request.threadId);
       if (current?.controller.pending) throw Object.assign(new Error('A controller action is in progress'), { code: 'action-in-progress' });
       if (current) await closeThread(request.threadId);
@@ -227,11 +242,12 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       return { attached: !!replacement, ...(replacement ? { thread: replacement.controller.view() } : {}) };
     }
     if (request.method === 'attach') {
-      if (!/^[0-9a-f-]{36}$/.test(request.threadId ?? '')) throw new Error('Invalid thread ID');
+      if (!source.validateThreadId(request.threadId)) throw new Error('Invalid thread ID');
       const entry = await attach(request.threadId);
       return { attached: !!entry, ...(entry ? { thread: entry.controller.view() } : {}) };
     }
     if (request.method !== 'hook') throw new Error('Unknown request');
+    if (readerFactory) return {};
     const event = request.event;
     if (!event || !/^[0-9a-f-]{36}$/.test(event.session_id ?? '')) return {};
     if (event.hook_event_name === 'SessionEnd') {
@@ -285,7 +301,10 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
     if (closing) return;
     closing = true;
     clearTimeout(timer);
-    for (const attempt of attaching.values()) attempt.cancelled = true;
+    for (const attempt of attaching.values()) {
+      attempt.cancelled = true;
+      if (readerFactory) await attempt.reader?.close();
+    }
     for (const id of threads.keys()) await closeThread(id);
     codex.close();
     await Promise.allSettled([...attaching.values()].map(attempt => attempt.promise));

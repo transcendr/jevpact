@@ -21,7 +21,7 @@ const textLimit = (text, limit) => text.length <= limit ? text : `[earlier text 
 export function buildPacket(snapshot, { maxChars = 12000, maxBytes = 22000 } = {}) {
   const direction = value => value ? { text: value.text, sequence: value.sequence, timestamp: value.timestamp, provenance: value.provenance } : null;
   const state = {
-    source: 'codex-visible-transcript',
+    source: snapshot.source ?? 'codex-visible-transcript',
     objective: direction(snapshot.objective),
     latestUserDirection: direction(snapshot.latestUserDirection),
     messages: (snapshot.messages ?? []).map(({ role, text, sequence, timestamp, prompted }) => ({ role, text, sequence, timestamp, prompted })),

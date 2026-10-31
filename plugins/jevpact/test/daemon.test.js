@@ -8,6 +8,7 @@ import { Transcript } from '../src/transcript.js';
 import { call } from '../src/rpc.js';
 import { History } from '../src/history.js';
 import { emptyConfig, writeConfig } from '../src/config.js';
+import { createT3ReaderFactory } from '../src/t3-reader.js';
 
 const id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const deferred = () => {
@@ -16,7 +17,8 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-async function fixture(t, { statusGate, openGate, onDecision, persistent = false, legacyWatchList = false } = {}) {
+async function fixture(t, { statusGate, openGate, onDecision, persistent = false, legacyWatchList = false,
+  readerFactory, onlyThreadId = id } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'jp-'));
   // This test process gets its own short socket path. Never contact or stop
   // the user's controller, including while a live journey is running.
@@ -48,7 +50,7 @@ async function fixture(t, { statusGate, openGate, onDecision, persistent = false
     unbindReader(id, reader) { if (this.readers.get(id) === reader) this.readers.delete(id); },
     close() { this.closed = true; },
   };
-  const daemon = await serve({ apiKey: 'unit-test-placeholder', transport, onlyThreads: persistent ? [] : [id], onDecision });
+  const daemon = await serve({ apiKey: 'unit-test-placeholder', transport, readerFactory, onlyThreads: persistent ? [] : [onlyThreadId], onDecision });
   assert.equal(daemon.alreadyRunning, undefined, 'Do not replace another running controller');
   t.after(async () => {
     statusGate?.resolve();
@@ -289,4 +291,51 @@ test('a valid attachment is not cut off by the former three-second request timeo
   const result = await pending;
   assert.equal(result.error, undefined);
   assert.equal(result.value.attached, true);
+});
+
+test('T3 attachment accepts host IDs without a rollout and remains observation-only after configuration reload', async t => {
+  const threadId = 'mcp:launch:disposable-daemon-test';
+  let readerClosed = false;
+  const readerFactory = createT3ReaderFactory({ environmentId: 'environment-test', projectRoot: '/project',
+    subscription: {
+      async open({ onFrame }) {
+        onFrame({ kind: 'snapshot', snapshotSequence: 1, projection: { thread: { id: threadId },
+          runs: [], messages: [], turnItems: [], providerThreads: [], providerTurns: [], subagents: [] } });
+        onFrame({ kind: 'synchronized' });
+      },
+      close() { readerClosed = true; },
+    },
+  });
+  const { daemon, transport } = await fixture(t, { readerFactory, onlyThreadId: threadId });
+  transport.locate = async () => { throw new Error('T3 must not consult the native Codex index'); };
+  transport.bindReader = () => { throw new Error('T3 must not bind to the native Codex transport'); };
+  const attached = await daemon.dispatch({ method: 'attach', threadId });
+  assert.equal(attached.attached, true);
+  assert.equal(attached.thread.mode, 'observe');
+  const document = emptyConfig(); document.global.settings.mode = 'automatic';
+  await writeConfig(document);
+  await daemon.dispatch({ method: 'reload-config' });
+  const status = await daemon.dispatch({ method: 'status' });
+  assert.equal(status.mode, 'observe');
+  assert.equal(status.threads[0].mode, 'observe');
+  assert.equal(status.threads[0].observationMode, 't3-subscription');
+  await daemon.close();
+  assert.equal(readerClosed, true);
+});
+
+test('daemon shutdown closes an injected reader whose initial subscription is still pending', async t => {
+  const threadId = 'mcp:launch:pending-subscription';
+  const entered = deferred();
+  let rejectOpen;
+  let closed = false;
+  const readerFactory = createT3ReaderFactory({ environmentId: 'environment-test', subscription: {
+    open() { entered.resolve(); return new Promise((_resolve, reject) => { rejectOpen = reject; }); },
+    close() { closed = true; rejectOpen?.(Object.assign(new Error('closed'), { code: 't3-subscription-closed' })); },
+  } });
+  const { daemon } = await fixture(t, { readerFactory, onlyThreadId: threadId });
+  const attachment = daemon.dispatch({ method: 'attach', threadId });
+  await entered.promise;
+  await daemon.close();
+  assert.equal(closed, true);
+  assert.deepEqual(await attachment, { attached: false });
 });
