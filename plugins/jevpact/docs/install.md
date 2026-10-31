@@ -31,7 +31,7 @@ node plugins/jevpact/bin/jevpact.js service status
 
 In Codex, open `/hooks`, inspect the Jevpact hook commands, and trust the eight lifecycle hooks. Restart Codex or open a new task so it picks up the installed plugin. Installing the plugin and trusting its hooks are separate actions. A running controller with zero attached tasks is not supervising any task.
 
-Hooks attach active tasks automatically. For an existing task, pass its native task ID to `attach`:
+Hooks attach active Desktop and terminal tasks automatically. T3-owned Codex sessions are excluded by their native `T3 Code` originator; use the separate [T3 service](t3-transport.md) to supervise them. Update both the plugin hooks and the controller to apply that exclusion. For an existing task, pass its native task ID to `attach`:
 
 ```sh
 node plugins/jevpact/bin/jevpact.js attach NATIVE_TASK_ID

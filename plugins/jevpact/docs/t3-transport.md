@@ -4,7 +4,7 @@ The macOS T3 service runs alongside the Codex Desktop service. Every command req
 
 ## Install and run
 
-Before running alongside Desktop, give T3's Codex provider a separate authenticated Codex home that does not load the Desktop Jevpact hooks. The service profile isolates Jevpact's own paths; it does not change the provider home or global hooks loaded by T3. Provider-hook isolation remains unverified in this handoff.
+Update the Desktop plugin hooks and controller from this revision before running both services together. Both reject Codex rollouts whose native session metadata identifies the originator as `T3 Code`, including remembered attachments. That marker already exists on unpatched T3; exclusion does not depend on the T3 service or guarded-maintenance capability. Desktop and terminal Codex sessions continue through the existing attachment path. A separate provider `CODEX_HOME` is used for isolated testing; the service profile itself does not change the provider home.
 
 Use Node.js 22.13 or later. Have the T3 server running and obtain a bearer credential for that environment with permission to observe threads and, for automatic maintenance, dispatch guarded maintenance. Put the raw T3 credential and Jev API key in separate files owned by you, with mode 0600. Pass file paths; never put secret values in arguments or configuration.
 
@@ -41,7 +41,7 @@ The service tracks all unarchived threads in the configured environment. Codex a
 
 One authenticated RPC socket carries a global shell stream and the detailed streams for active work. Idle threads retain their observed state without a detailed stream. A detailed stream remains open through a pending maintenance cycle, then closes when the controller is quiescent. This avoids a socket or live server subscription per idle thread while preserving request cadence and compaction baselines across turns. T3's marked project-metadata refreshes do not replace the thread catalog.
 
-Plain status lists each attachment and explains read-only, disabled, missing request identity, missing usage, insufficient cadence or growth, unsupported provider, and recovery states. JSON status also exposes profile paths, consent, capabilities, detailed-subscription count, and per-thread configuration keys. If the latest usage lacks a native request ID, automatic policy is ineligible until identified usage arrives. Historical request counts do not authorize a decision on unidentified current usage.
+Plain status lists each attachment and explains read-only, disabled, missing request identity, missing usage, insufficient cadence or growth, unsupported provider, and recovery states. JSON status also exposes profile paths, consent, capabilities, detailed-subscription count, and per-thread configuration keys. If the latest usage lacks a native request ID, automatic policy is ineligible until identified usage arrives. Historical request counts do not authorize a decision on unidentified current usage. JSON status exposes `identityGate.checks` and `identityGate.blocked` for each attachment since the daemon started. These count automatic identity-gate checks, including startup and idle periods without current usage; they are not counts of Jev API requests.
 
 Use the existing settings mechanism with a raw T3 thread ID or an absolute project path:
 

@@ -18,14 +18,14 @@ const deferred = () => {
 };
 
 async function fixture(t, { statusGate, openGate, onDecision, persistent = false, legacyWatchList = false,
-  readerFactory, onlyThreadId = id } = {}) {
+  readerFactory, onlyThreadId = id, originator } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'jp-'));
   // This test process gets its own short socket path. Never contact or stop
   // the user's controller, including while a live journey is running.
   t.mock.method(os, 'tmpdir', () => directory);
   t.mock.method(os, 'homedir', () => directory);
   const transcript = path.join(directory, 'rollout.jsonl');
-  await writeFile(transcript, JSON.stringify({ type: 'session_meta', payload: { id, cli_version: '0.155.0-alpha.9.2' } }) + '\n');
+  await writeFile(transcript, JSON.stringify({ type: 'session_meta', payload: { id, cli_version: '0.155.0-alpha.9.2', originator } }) + '\n');
   if (legacyWatchList) {
     const legacy = path.join(directory, `jevpact-${process.getuid()}`);
     await mkdir(legacy);
@@ -369,4 +369,43 @@ test('T3 writes require explicit attachment opt-in and reattachment clears that 
   const document = emptyConfig(); document.global.settings.mode = 'off';
   await writeConfig(document); await daemon.dispatch({ method: 'reload-config' });
   assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].mode, 'off');
+});
+
+test('Desktop rejects T3 ownership before allocating a reader, binding or evaluation', async t => {
+  const { daemon, readers, transport } = await fixture(t, { originator: 'T3 Code' });
+  assert.deepEqual(await daemon.dispatch({ method: 'attach', threadId: id }), { attached: false });
+  assert.equal(readers.length, 0);
+  assert.equal(transport.readers.size, 0);
+  assert.deepEqual((await daemon.dispatch({ method: 'status' })).threads, []);
+});
+
+test('health-status returns expected watch health without controller decision history', async t => {
+  const { daemon } = await fixture(t);
+  await daemon.dispatch({ method: 'attach', threadId: id });
+  daemon.getThread(id).controller.log.push({ reason: 'x'.repeat(142620) });
+  const reply = await daemon.dispatch({ method: 'health-status', expectedThreads: [id, 'missing'] });
+  assert.deepEqual(reply.threads, [{ sessionId: id, supported: true, observationMode: 'watch', watchError: null }]);
+  assert.equal(JSON.stringify(reply).includes('decisions'), false);
+  assert.equal(reply.mode, 'automatic');
+});
+
+test('restored Desktop watch lists forget T3-owned sessions', async t => {
+  const { daemon, readers, directory } = await fixture(t, { persistent: true, legacyWatchList: true, originator: 'T3 Code' });
+  await daemon.restored;
+  assert.equal(readers.length, 0);
+  assert.deepEqual((await daemon.dispatch({ method: 'status' })).threads, []);
+  const watched = JSON.parse(await readFile(path.join(directory, 'Library', 'Application Support', 'Jevpact', 'watched-threads.json'), 'utf8'));
+  assert.deepEqual(watched, []);
+});
+
+test('T3 ownership discovered during hydration cannot publish a Desktop attachment', async t => {
+  const openGate = deferred();
+  const { daemon, opened, transport } = await fixture(t, { openGate });
+  const attaching = daemon.dispatch({ method: 'attach', threadId: id });
+  const reader = await opened.promise;
+  await writeFile(reader.path, JSON.stringify({ type: 'session_meta', payload: { id, originator: 'T3 Code' } }) + '\n');
+  openGate.resolve();
+  assert.deepEqual(await attaching, { attached: false });
+  assert.equal(reader.closed, true);
+  assert.equal(transport.readers.size, 0);
 });

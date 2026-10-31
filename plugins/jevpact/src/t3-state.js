@@ -109,7 +109,7 @@ export class T3State {
     }
     this.trackRequest(name, record, usage);
     if (usage != null && JSON.stringify(usage) !== JSON.stringify(previousUsage)) {
-      this.measure(record.providerThreadId ?? record.id, usage);
+      this.measureCurrent(name, record, usage);
     }
     records.set(record.id, { ...record, sequence,
       completionSequence: firstCompletion ? sequence : previous?.completionSequence,
@@ -148,6 +148,15 @@ export class T3State {
     if (stop && !this.stops.has(record.id)) {
       this.stops.add(record.id); this.userEpoch++; this.userStopped = true;
     }
+  }
+
+  measureCurrent(name, record, usage) {
+    const providerId = record.providerThreadId ?? record.id;
+    const at = time(usage.updatedAt), compactedAt = this.compactionTimes.get(providerId);
+    if (at && compactedAt && at <= compactedAt) return;
+    if (name === 'providerTurns' && list(this.collections.providerTurns).some(turn =>
+      turn.providerThreadId === providerId && turn.ordinal > record.ordinal)) return;
+    this.measure(providerId, usage);
   }
 
   measure(providerThreadId, usage) {

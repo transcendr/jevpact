@@ -932,3 +932,15 @@ test('new user direction reassesses the updated state instead of marking it asse
   await controller.tick();
   assert.ok(decisions.length > before);
 });
+
+test('status counts each request-identity gate check and refusal', async t => {
+  const { reader, controller } = make(t);
+  reader.s.modelRequestIdentityAvailable = false;
+  await controller.tick();
+  await controller.tick();
+  assert.deepEqual(controller.view().identityGate, { checks: 2, blocked: 2 });
+  reader.s.modelRequestIdentityAvailable = true;
+  reader.s.inputTokens = 100;
+  await controller.tick();
+  assert.deepEqual(controller.view().identityGate, { checks: 3, blocked: 2 });
+});

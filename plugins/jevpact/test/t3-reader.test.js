@@ -279,9 +279,15 @@ for (const driver of ['codex', 'claudeAgent']) test(`${driver}: counts native re
   assert.equal(f.reader.snapshot().requestsSinceCompaction,0,'A repeated old request is not a post-compaction request');
   f.event('provider-turn.updated',turn('next-turn','request-c','2026-10-31T12:00:07Z','next-attempt'));
   assert.deepEqual([f.reader.snapshot().requests,f.reader.snapshot().requestsSinceCompaction],[3,1]);
+  f.event('provider-turn.updated',{...turn('latest-turn','request-d','2026-10-31T12:00:09Z','next-attempt'),ordinal:2,tokenUsage:usage('request-d','2026-10-31T12:00:09Z',3000)});
+  const beforeLate=f.reader.snapshot();
+  f.event('provider-turn.updated',turn('native-turn','request-late','2026-10-31T12:00:04Z'));
+  const afterLate=f.reader.snapshot();
+  assert.deepEqual([afterLate.inputTokens,afterLate.baselineInputTokens,afterLate.recentGrowthTokens],[beforeLate.inputTokens,beforeLate.baselineInputTokens,beforeLate.recentGrowthTokens],'Late old usage cannot replace the current context measurement');
+  assert.equal(afterLate.requestsSinceCompaction,2,'A late pre-compaction request stays before the boundary');
   f.event('provider-thread.updated',{...f.provider,id:'child',ownerNodeId:'child-node'});
   f.event('provider-turn.updated',{...turn('child-turn','child-request','2026-10-31T12:00:08Z'),providerThreadId:'child'});
-  assert.equal(f.reader.snapshot().requests,3,'Native child requests do not advance the root cadence');
+  assert.equal(f.reader.snapshot().requests,5,'Native child requests do not advance the root cadence');
 });
 
 test('a queued successor is not the current assignment used by maintenance guards',async t=>{

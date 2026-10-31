@@ -36,6 +36,7 @@ export class Controller extends EventEmitter {
     this.pending = null;
     this.evaluation = null;
     this.lastEvaluation = '';
+    this.identityGate = { checks: 0, blocked: 0 };
     this.closed = false;
     this.log = [];
     this.observedGeneration = reader.snapshot().compactionGeneration;
@@ -130,6 +131,7 @@ export class Controller extends EventEmitter {
     const s = this.reader.snapshot();
     return { sessionId: s.sessionId, state: this.state, supported: s.supported,
       mode: this.config.mode ?? 'automatic', configPending: !!this.nextConfig,
+      identityGate: { ...this.identityGate },
       disabledReason: s.disabledReason, usage: usage(s), requestsSinceCompaction: s.requestsSinceCompaction,
       pendingTurnId: this.pending?.turnId ?? null, recoveryRequired: this.pending?.failure ?? null, decisions: this.log };
   }
@@ -235,7 +237,9 @@ export class Controller extends EventEmitter {
         return;
       }
       if (this.config.mode === 'off') { this.skip('configuration-off', s); return; }
+      if (!this.pending && s.modelRequestIdentityAvailable !== undefined) this.identityGate.checks++;
       if (!this.pending && s.modelRequestIdentityAvailable === false) {
+        this.identityGate.blocked++;
         this.skip('model-request-identity-unavailable', s); return;
       }
       if (!this.pending && this.codex.canMaintainAutomatically?.(s.sessionId) === false) {

@@ -30,12 +30,12 @@ export function healthFailure(status, expectedVersion, expectedThreads) {
   return null;
 }
 
-export function readStatus(socketPath = defaultSocketPath()) {
+export function readStatus(socketPath = defaultSocketPath(), expectedThreads = []) {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socketPath);
     let data = '';
     const timer = setTimeout(() => client.destroy(new Error('Jevpact status timed out')), 3000);
-    client.once('connect', () => client.write(JSON.stringify({method:'status', ...(process.env.JEVPACT_T3_PROFILE ? {summary:true} : {})}) + '\n'));
+    client.once('connect', () => client.write(JSON.stringify({ method: 'health-status', expectedThreads }) + '\n'));
     client.on('data', chunk => {
       data += chunk.toString();
       if (data.length > 128000) return client.destroy(new Error('Oversized status reply'));
@@ -63,7 +63,7 @@ export async function notifyUser(kind, reason) {
 }
 
 export async function probe({ expectedVersion, expectedThreads = [], statePath = defaultStatePath(),
-  getStatus = readStatus, notify = notifyUser } = {}) {
+  getStatus = () => readStatus(defaultSocketPath(), expectedThreads), notify = notifyUser } = {}) {
   let previous = { failures: 0, alerted: false };
   try {
     const stored = JSON.parse(await readFile(statePath, 'utf8'));

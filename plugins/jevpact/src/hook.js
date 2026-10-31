@@ -1,3 +1,4 @@
+import { isT3OwnedRollout } from './codex-host.js';
 import { call } from './rpc.js';
 import { PAUSE_PREFIX, RESUME_PREFIX } from './controller.js';
 
@@ -13,6 +14,7 @@ export function reduceHook(input) {
 }
 
 export async function runHook(input) {
+  if (await isT3OwnedRollout(input.transcript_path, input.session_id)) return {};
   try { return await call({ method: 'hook', event: reduceHook(input) }, { timeout: 800 }); }
   catch { return {}; } // Native behavior continues when Jevpact is unavailable.
 }

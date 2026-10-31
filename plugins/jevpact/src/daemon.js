@@ -1,3 +1,4 @@
+import { isT3OwnedRollout } from './codex-host.js';
 import net from 'node:net';
 import { chmod, lstat, unlink, readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
@@ -141,6 +142,10 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       try {
         const state = await source.locate(id);
         if (closing || attempt.cancelled) return null;
+        if (!readerFactory && await isT3OwnedRollout(state.rolloutPath, id)) {
+          if (remembered.delete(id)) await saveWatchList();
+          return null;
+        }
         attempt.path = state.rolloutPath;
         const resolved = effectiveFor({ threadId: id, cwd: state.cwd }, allowWrites);
         const settings = resolved.settings;
@@ -148,6 +153,11 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
         attempt.reader = reader;
         await reader.open(state.rolloutPath);
         if (closing || attempt.cancelled) return null;
+        // Session metadata can finish flushing while the reader hydrates.
+        if (!readerFactory && await isT3OwnedRollout(state.rolloutPath, id)) {
+          if (remembered.delete(id)) await saveWatchList();
+          return null;
+        }
         if (!reader.snapshot().supported && source.allowUnsupported !== true) throw Object.assign(new Error('Unsupported transcript'), { code: reader.snapshot().disabledReason });
         if (reader.snapshot().sessionId !== id) throw Object.assign(new Error('Reader identity mismatch'), { code: 'reader-identity-mismatch' });
         if (!readerFactory || codex.capabilities?.explicitMaintenance) codex.bindReader(id, reader, { allowWrites });
@@ -194,6 +204,18 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   const dispatch = async request => {
     touch();
     if (request.method === 'detach') { await closeThread(request.threadId); return { detached: true }; }
+    if (request.method === 'health-status') return {
+      running: true, runtime,
+      mode: source.observationOnly && ![...threads.values()].some(e => e.allowWrites && e.settings.mode === 'automatic') ? 'observe' : 'automatic',
+      source: { kind: source.status?.()?.kind },
+      threads: (request.expectedThreads ?? []).flatMap(id => {
+        const entry = threads.get(id);
+        if (!entry) return [];
+        const snapshot = entry.reader.snapshot();
+        return [{ sessionId: id, supported: snapshot.supported,
+          observationMode: snapshot.observationMode, watchError: snapshot.watchError }];
+      }),
+    };
     if (request.method === 'status') return { running: true, pid: process.pid, runtime, lastAttachmentFailure,
       configPath: configPath(),
       history: { ...historyOptions, available: !!history, failure: historyFailure },
