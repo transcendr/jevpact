@@ -61,24 +61,30 @@ export class T3Subscription {
       socket.addEventListener('message', event => {
         if (this.closed || ended) return;
         try {
-          for (const line of String(event.data).split('\n').filter(Boolean)) {
-            const message = JSON.parse(line);
-            if (message._tag === 'Ping') { socket.send(JSON.stringify({ _tag: 'Pong' })); continue; }
-            if (message._tag === 'Defect') throw failure('t3-protocol-failed');
-            if (String(message.requestId) !== '1') continue;
-            if (message._tag === 'Exit') throw failure('t3-subscription-ended');
-            if (message._tag !== 'Chunk' || !Array.isArray(message.values)) throw failure('t3-invalid-frame');
-            for (const frame of message.values) {
-              onFrame(frame);
-              if (frame.kind === 'synchronized' && !ready) { ready = true; resolve(); }
-            }
-            socket.send(JSON.stringify({ _tag: 'Ack', requestId: '1' }));
-          }
+          this.receive(event.data, { socket, onFrame,
+            onSynchronized: () => { if (!ready) { ready = true; resolve(); } } });
         } catch { end('t3-invalid-frame'); socket.close(); }
       });
       socket.addEventListener('error', () => end('t3-connection-failed'));
       socket.addEventListener('close', () => end('t3-disconnected'));
     });
+  }
+
+  receive(data, handlers) {
+    for (const line of String(data).split('\n').filter(Boolean)) this.handle(JSON.parse(line), handlers);
+  }
+
+  handle(message, { socket, onFrame, onSynchronized }) {
+    if (message._tag === 'Ping') { socket.send(JSON.stringify({ _tag: 'Pong' })); return; }
+    if (message._tag === 'Defect') throw failure('t3-protocol-failed');
+    if (String(message.requestId) !== '1') return;
+    if (message._tag === 'Exit') throw failure('t3-subscription-ended');
+    if (message._tag !== 'Chunk' || !Array.isArray(message.values)) throw failure('t3-invalid-frame');
+    for (const frame of message.values) {
+      onFrame(frame);
+      if (frame.kind === 'synchronized') onSynchronized();
+    }
+    socket.send(JSON.stringify({ _tag: 'Ack', requestId: '1' }));
   }
 
   close() {

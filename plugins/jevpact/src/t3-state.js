@@ -14,6 +14,9 @@ const text = value => typeof value === 'string' ? value : value == null ? '' : J
 const maintenance = message => message?.role === 'user' && message.text?.trim().toLowerCase() === '/compact'
   && !(message.attachments?.length);
 const bySequence = (a, b) => a.sequence - b.sequence;
+const validRecord = (name, record, threadId) => record?.id
+  && (record.threadId == null || record.threadId === threadId)
+  && (name !== 'providerThreads' || record.appThreadId == null || record.appThreadId === threadId);
 
 /** Translate T3 records without treating agent-authored user-role messages as human direction. */
 export class T3State {
@@ -74,23 +77,13 @@ export class T3State {
   }
 
   store(name, record) {
-    if (!record?.id || (record.threadId != null && record.threadId !== this.threadId)
-      || (name === 'providerThreads' && record.appThreadId != null && record.appThreadId !== this.threadId)) {
+    if (!validRecord(name, record, this.threadId)) {
       this.disable('t3-record-identity-mismatch'); return;
     }
     const records = this.collections[name];
     const previous = records.get(record.id);
     const changed = !previous || previous.text !== record.text;
-    const human = name === 'messages' && record.role === 'user' && record.createdBy === 'user' && !maintenance(record);
-    const stop = name === 'turnItems' && record.type === 'run_interrupt_request';
-    if (human && this.directions.get(record.id) !== record.text) {
-      this.directions.set(record.id, record.text);
-      this.userEpoch++;
-      this.userStopped = STOP.test(record.text.trim());
-    }
-    if (stop && !this.stops.has(record.id)) {
-      this.stops.add(record.id); this.userEpoch++; this.userStopped = true;
-    }
+    this.trackDirection(name, record);
     const sequence = (name === 'messages' && !changed) ? previous.sequence : ++this.sequence;
     const usage = record.tokenUsage ?? record.contextUsage;
     const previousUsage = previous?.tokenUsage ?? previous?.contextUsage;
@@ -103,6 +96,19 @@ export class T3State {
     records.set(record.id, { ...record, sequence,
       completionSequence: firstCompletion ? sequence : previous?.completionSequence,
       usageSequence: usage != null && JSON.stringify(usage) !== JSON.stringify(previousUsage) ? sequence : previous?.usageSequence });
+  }
+
+  trackDirection(name, record) {
+    const human = name === 'messages' && record.role === 'user' && record.createdBy === 'user' && !maintenance(record);
+    const stop = name === 'turnItems' && record.type === 'run_interrupt_request';
+    if (human && this.directions.get(record.id) !== record.text) {
+      this.directions.set(record.id, record.text);
+      this.userEpoch++;
+      this.userStopped = STOP.test(record.text.trim());
+    }
+    if (stop && !this.stops.has(record.id)) {
+      this.stops.add(record.id); this.userEpoch++; this.userStopped = true;
+    }
   }
 
   measure(providerThreadId, usage) {
