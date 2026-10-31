@@ -1,6 +1,6 @@
 # T3 guarded maintenance
 
-`T3Reader` remains read-only. `T3Transport` adds automatic and explicit maintenance for a T3 server advertising `guardedMaintenance: 1`. Both use authenticated protocol-2 connections to the same environment. Automatic cadence counts distinct native model-request IDs: Codex response IDs correlated with native usage, and Claude message IDs shared by streaming and snapshot updates. Active pause additionally requires `guardedMaintenanceActivePause: true`. A server without that flag can perform guarded idle maintenance but receives no active pause from this adapter.
+`T3Reader` remains read-only. `T3Transport` adds automatic and explicit maintenance for a T3 server advertising `guardedMaintenance: 1`. Both use authenticated protocol-2 connections to the same environment. Automatic cadence counts distinct native model-request IDs: Codex response IDs from canonical usage records in the rollout path returned by the native thread API, and Claude message IDs shared by streaming and snapshot updates. Active pause additionally requires `guardedMaintenanceActivePause: true`. A server without that flag can perform guarded idle maintenance but receives no active pause from this adapter.
 
 Import the components into a host that owns its Jevpact daemon. Supply the actual T3 origin, environment ID, project root, and a credential callback reading a private credential file. Keep credentials out of configuration, logs, command arguments, and source:
 
