@@ -45,11 +45,13 @@ export class T3State {
 
   disable(reason) { this.disabledReason = reason; this.revision++; }
 
-  hydrate({ projection, snapshotSequence }) {
+  hydrate({ projection, snapshotSequence, historyCursor, hasMoreHistory }) {
     if (projection?.thread?.id !== this.threadId || !validNumber(snapshotSequence)) {
       this.disable('t3-thread-identity-mismatch'); return;
     }
     this.thread = projection.thread;
+    this.historyCursor = historyCursor ?? null;
+    this.historyComplete = hasMoreHistory === false || historyCursor === null;
     const entries = [];
     for (const [name, records] of Object.entries(this.collections)) {
       records.clear();
@@ -133,7 +135,9 @@ export class T3State {
   }
 
   visibleMessages() {
-    const all = list(this.collections.messages).sort(bySequence).filter(item => item.role !== 'system' && !maintenance(item));
+    const compactRuns = new Set(list(this.collections.runs).filter(run => maintenance(this.collections.messages.get(run.userMessageId))).map(run => run.id));
+    const all = list(this.collections.messages).sort(bySequence).filter(item => item.role !== 'system'
+      && !item.maintenance && !maintenance(item) && !compactRuns.has(item.runId));
     const human = all.filter(item => item.role === 'user' && item.createdBy === 'user');
     const assistant = all.filter(item => item.role === 'assistant').map(item => ({ id: item.id, role: item.role,
       text: item.text.slice(-Math.min(6000, this.maxChars)), turnId: item.runId, sequence: item.sequence,
@@ -173,6 +177,26 @@ export class T3State {
       timestamp: items.at(-1).updatedAt, turnId: items.at(-1).runId, interpretation: 'unknown' } : null };
   }
 
+  threadUnavailable() {
+    const thread = this.thread;
+    return !!(thread?.deletedAt || thread?.archivedAt || thread?.settledAt || thread?.snoozedUntil
+      || thread?.settledOverride === 'settled' || thread?.lineage?.relationshipToParent === 'subagent');
+  }
+
+  controlState(run, provider, compaction) {
+    return {
+      threadUnavailable: this.threadUnavailable(),
+      nativeSessionRef: structuredClone(provider?.nativeThreadRef ?? null),
+      runAttemptId: run?.activeAttemptId ?? null,
+      runMessageObserved: this.collections.messages.has(run?.userMessageId),
+      historyCursor: this.historyCursor, historyComplete: this.historyComplete === true,
+      controlMessages: list(this.collections.messages).filter(item => item.maintenance)
+        .map(item => ({ id: item.id, runId: item.runId, maintenance: structuredClone(item.maintenance) })),
+      compactionRunId: compaction?.runId ?? null,
+      compactionRunStatus: this.collections.runs.get(compaction?.runId)?.status ?? null,
+    };
+  }
+
   snapshot() {
     const { run, provider, turn, work, isMaintenance } = this.lifecycle();
     const usageRecord = (turn?.usageSequence ?? -1) > (provider?.usageSequence ?? -1) ? turn : provider;
@@ -205,6 +229,7 @@ export class T3State {
       nativeSessionRefStrength: provider?.nativeThreadRef?.strength ?? null,
       providerTurnId: turn?.id ?? null, nativeTurnId: turn?.nativeTurnRef?.nativeId ?? null,
       nativeTurnRefStrength: turn?.nativeTurnRef?.strength ?? null,
+      ...this.controlState(run, provider, latestCompaction),
       runId: run?.id ?? null, workRunId: work?.id ?? null, maintenanceRunId: isMaintenance ? run.id : null,
       turnId: run?.id ?? null, turnStatus: reason ? 'unknown' : run && ACTIVE.has(run.status) ? 'active' : this.thread ? 'idle' : 'unknown',
       lastTurnStatus: run?.status ?? null, userEpoch: this.userEpoch,

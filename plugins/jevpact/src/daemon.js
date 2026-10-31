@@ -40,7 +40,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
   let savedConfig = await readConfig();
   const effectiveFor = state => {
     const resolved = resolveConfig(savedConfig, { threadId: state.threadId, cwd: state.cwd, base: config });
-    if (source.observationOnly) resolved.settings = { ...resolved.settings, mode: 'observe' };
+    if (source.observationOnly && resolved.settings.mode !== 'off') resolved.settings = { ...resolved.settings, mode: 'observe' };
     return resolved;
   };
   const globalSettings = resolveConfig(savedConfig, { base: config }).settings;
@@ -125,10 +125,10 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
     retain(id, { time: Date.now(), event: 'detached', reason: closing ? 'controller-stopped' : 'session-ended-or-replaced' });
     threads.delete(id);
     entry.controller.close();
-    if (!readerFactory) codex.unbindReader(id, entry.reader);
+    if (!readerFactory || codex.capabilities?.explicitMaintenance) codex.unbindReader(id, entry.reader);
     await entry.reader.close();
   };
-  const attach = async (id, requestedPath) => {
+  const attach = async (id, requestedPath, { allowWrites = false } = {}) => {
     if (closing) return null;
     if (threads.has(id)) return threads.get(id);
     if (attaching.has(id)) return attaching.get(id).promise;
@@ -149,13 +149,14 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
         if (closing || attempt.cancelled) return null;
         if (!reader.snapshot().supported) throw Object.assign(new Error('Unsupported transcript'), { code: reader.snapshot().disabledReason });
         if (reader.snapshot().sessionId !== id) throw Object.assign(new Error('Reader identity mismatch'), { code: 'reader-identity-mismatch' });
-        if (!readerFactory) codex.bindReader(id, reader);
+        if (!readerFactory || codex.capabilities?.explicitMaintenance) codex.bindReader(id, reader, { allowWrites });
         const controller = new Controller({ reader, codex, config: settings,
           templateContext: { projectRoot: projectIdentity(state.cwd), profileName: resolved.profileName },
           evaluate: (packet, { signal, purpose, onRequest }) => evaluate(packet, { apiKey, signal, purpose, onRequest }), decide: decisionPolicy });
         controller.on('diagnostic', event => retain(id, event));
         if (onDecision) controller.on('decision', decision => onDecision(id, decision));
         const entry = { id, cwd: state.cwd, reader, controller, settings, resolved, configState: null,
+          allowWrites: allowWrites === true && codex.capabilities?.explicitMaintenance === true,
           hookCounts: {}, lastHook: null };
         threads.set(id, entry);
         retain(id, { time: Date.now(), event: 'attached', rolloutPath: state.rolloutPath,
@@ -179,7 +180,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
         throw error;
       } finally {
         if (reader && !published) {
-          if (!readerFactory) codex.unbindReader(id, reader);
+          if (!readerFactory || codex.capabilities?.explicitMaintenance) codex.unbindReader(id, reader);
           await reader.close();
         }
       }
@@ -198,7 +199,7 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       threads: [...threads.values()].map(e => ({ ...e.controller.view(),
         configState: e.configState && { ...e.configState, deferred: !!e.controller.nextConfig },
         matchedProject: e.resolved.matchedProject,
-        observationMode: e.reader.snapshot().observationMode, watchError: e.reader.snapshot().watchError,
+        allowWrites: e.allowWrites, observationMode: e.reader.snapshot().observationMode, watchError: e.reader.snapshot().watchError,
         hookCounts: e.hookCounts, lastHook: e.lastHook })) };
     if (request.method === 'reload-config') {
       const updated = await readConfig();
@@ -238,13 +239,18 @@ export async function serve({ apiKey, config = {}, onlyThreads = [], idleMs = 0,
       const current = threads.get(request.threadId);
       if (current?.controller.pending) throw Object.assign(new Error('A controller action is in progress'), { code: 'action-in-progress' });
       if (current) await closeThread(request.threadId);
-      const replacement = await attach(request.threadId);
+      const replacement = await attach(request.threadId, undefined, { allowWrites: request.allowWrites });
       return { attached: !!replacement, ...(replacement ? { thread: replacement.controller.view() } : {}) };
     }
     if (request.method === 'attach') {
       if (!source.validateThreadId(request.threadId)) throw new Error('Invalid thread ID');
-      const entry = await attach(request.threadId);
+      const entry = await attach(request.threadId, undefined, { allowWrites: request.allowWrites });
       return { attached: !!entry, ...(entry ? { thread: entry.controller.view() } : {}) };
+    }
+    if (request.method === 'maintain') {
+      const entry = threads.get(request.threadId);
+      if (!entry?.allowWrites) throw Object.assign(new Error('T3 writes are not enabled for this attachment'), { code: 't3-writes-not-enabled' });
+      return entry.controller.requestMaintenance({ resume: request.resume === true });
     }
     if (request.method !== 'hook') throw new Error('Unknown request');
     if (readerFactory) return {};

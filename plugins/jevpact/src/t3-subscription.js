@@ -56,7 +56,7 @@ export class T3Subscription {
       socket.addEventListener('open', () => {
         if (this.closed) { socket.close(); return; }
         socket.send(JSON.stringify({ _tag: 'Request', id: '1', tag: 'orchestration.subscribeThread',
-          payload: { threadId, ...(afterSequence == null ? {} : { afterSequence }), requestCompletionMarker: true }, headers: [] }));
+          payload: { threadId, ...(afterSequence == null ? {} : { afterSequence }), requestCompletionMarker: true, acceptBoundedSnapshot: true }, headers: [] }));
       });
       socket.addEventListener('message', event => {
         if (this.closed || ended) return;

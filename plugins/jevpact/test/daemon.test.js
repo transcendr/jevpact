@@ -339,3 +339,27 @@ test('daemon shutdown closes an injected reader whose initial subscription is st
   assert.equal(closed, true);
   assert.deepEqual(await attachment, { attached: false });
 });
+
+test('T3 writes require explicit attachment opt-in and reattachment clears that grant', async t => {
+  const threadId = 'mcp:launch:maintenance-daemon-test';
+  const readerFactory = createT3ReaderFactory({ environmentId: 'environment-test', projectRoot: '/project', subscription: {
+    async open({ onFrame }) { onFrame({ kind: 'snapshot', snapshotSequence: 1, projection: {
+      thread: { id: threadId }, runs: [], messages: [], turnItems: [], providerThreads: [], providerTurns: [], subagents: [] } });
+    onFrame({ kind: 'synchronized' }); }, close() {} } });
+  const { daemon, transport } = await fixture(t, { readerFactory, onlyThreadId: threadId });
+  transport.capabilities = { explicitMaintenance: true, automatic: false };
+  const grants = []; transport.bindReader = (_id, _reader, options) => grants.push(options.allowWrites);
+  await daemon.dispatch({ method: 'attach', threadId });
+  assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, false);
+  await assert.rejects(daemon.dispatch({ method: 'maintain', threadId }), { code: 't3-writes-not-enabled' });
+  await daemon.dispatch({ method: 'attach', threadId, allowWrites: true });
+  assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, false, 'An existing read-only attachment is not silently upgraded');
+  await daemon.dispatch({ method: 'reattach', threadId, allowWrites: true });
+  assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, true);
+  await daemon.dispatch({ method: 'reattach', threadId });
+  assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].allowWrites, false);
+  assert.deepEqual(grants, [false, true, false]);
+  const document = emptyConfig(); document.global.settings.mode = 'off';
+  await writeConfig(document); await daemon.dispatch({ method: 'reload-config' });
+  assert.equal((await daemon.dispatch({ method: 'status' })).threads[0].mode, 'off');
+});

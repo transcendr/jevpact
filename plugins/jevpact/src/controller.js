@@ -48,17 +48,40 @@ export class Controller extends EventEmitter {
         }, s);
       }
       this.observedGeneration = s.compactionGeneration;
+      this.adoptObservedCompaction(s);
       if (this.pending?.delivered && !s.supported && !s.userStopped && s.userEpoch === this.pending.userEpoch) {
         if (this.state !== 'recovery-required') this.recover(this.pending, { code: 'transcript-unavailable' }, 'paused-observation');
       } else if (this.pending && (!s.supported || s.userStopped || s.userEpoch !== this.pending.userEpoch)) {
         this.invalidate('new direction, stop, or unavailable transcript');
-      } else if (this.pending && ['awaiting-idle', 'checking-pause'].includes(this.state)
-        && s.turnId != null && s.turnId !== this.pending.turnId) {
+      } else if (this.selectedTurnChanged(s)) {
         this.invalidate('selected turn changed');
       }
       this.wake();
     };
     reader.on('change', this.onChange);
+  }
+
+  selectedTurnChanged(s) {
+    const p = this.pending;
+    if (p?.explicit && s.runMessageObserved === false) return false;
+    return p && !(p.explicit && p.adoptedCompaction) && ['awaiting-idle', 'checking-pause'].includes(this.state)
+      && s.turnId != null && s.turnId !== p.turnId;
+  }
+
+  adoptObservedCompaction(s) {
+    const p = this.pending;
+    if (!p?.explicit || !p.delivered || !['awaiting-idle', 'checking-pause'].includes(this.state)) return;
+    const sameWork = s.turnId === p.turnId || (s.maintenanceRunId && s.workRunId === p.turnId);
+    if (!sameWork || (!s.maintenanceRunId && s.compactionGeneration <= p.generation)) return;
+    if (!p.adoptedCompaction) this.record('native-compaction-adopted', { turnId: p.turnId, origin: 't3' });
+    p.adoptedCompaction = true;
+    p.lastBeforeCompaction ??= assistantReport(s, p.turnId)?.text ?? null;
+  }
+
+  pauseIsIdle(s, p) {
+    if (s.turnStatus !== 'idle') return false;
+    if (!p.explicit || !p.adoptedCompaction) return s.turnId === p.turnId;
+    return s.compactionGeneration > p.initialGeneration && s.compactionRunStatus === 'completed';
   }
 
   record(event, details = {}) {
@@ -129,6 +152,7 @@ export class Controller extends EventEmitter {
   }
 
   invalidate(reason) {
+    this.codex.endOperation?.(this.reader.snapshot().sessionId);
     this.evaluation?.abort();
     this.evaluation = null;
     this.pending?.abort.abort();
@@ -211,6 +235,9 @@ export class Controller extends EventEmitter {
         return;
       }
       if (this.config.mode === 'off') { this.skip('configuration-off', s); return; }
+      if (this.codex.capabilities?.automatic === false && !this.pending?.explicit) {
+        this.skip('t3-automatic-policy-disabled', s); return;
+      }
       if (this.state === 'recovery-required') {
         // A failed/ambiguous operation must not silently strand a paused worker or
         // cause a second blind mutation. Only a new user direction releases it.
@@ -231,7 +258,7 @@ export class Controller extends EventEmitter {
       }
       if (this.state === 'compacting') return;
       if (this.state === 'awaiting-idle') {
-        if (s.turnStatus === 'idle' && s.turnId === this.pending.turnId) await this.afterPause(s);
+        if (this.pauseIsIdle(s, this.pending)) await this.afterPause(s);
         return;
       }
       const u = usage(s);
@@ -304,6 +331,46 @@ export class Controller extends EventEmitter {
     }
   }
 
+  maintenanceIsCurrent(s) {
+    const current = this.reader.snapshot();
+    return !this.closed && !this.stopped && current.supported && !current.userStopped
+      && current.turnId === s.turnId && stamp(current) === stamp(s);
+  }
+
+  async requestMaintenance({ resume = false } = {}) {
+    if (typeof this.codex.beginOperation !== 'function') throw Object.assign(new Error('Explicit maintenance unavailable'), { code: 'explicit-maintenance-unavailable' });
+    if (this.closed || this.stopped || this.config.mode === 'off') throw cancelled();
+    if (this.pending || this.busy) throw Object.assign(new Error('A controller action is in progress'), { code: 'action-in-progress' });
+    const s = this.reader.snapshot();
+    const isCurrent = () => this.maintenanceIsCurrent(s);
+    if (!isCurrent()) throw cancelled();
+    this.busy = true;
+    let operationId;
+    try { operationId = await this.codex.beginOperation(s.sessionId, { isCurrent }); }
+    finally { this.busy = false; }
+    if (!isCurrent()) { this.codex.endOperation(s.sessionId); throw cancelled(); }
+    this.pending = { explicit: true, operationId, turnId: s.turnId, stamp: stamp(s), generation: s.compactionGeneration,
+      initialGeneration: s.compactionGeneration, evaluationId: null, revision: s.revision, createdAt: this.now(), kind: 'explicit', reason: 'explicit-maintenance',
+      templateContext: { ...this.templateContext }, delivered: false, preNoticeReport: assistantReport(s, s.turnId),
+      userEpoch: s.userEpoch, abort: new AbortController() };
+    this.explicitTask = this.startMaintenance(s, resume);
+    this.explicitTask.catch(error => { if (this.pending) this.recover(this.pending, error, 'explicit-maintenance'); });
+    return { requested: true, operationId };
+  }
+
+  async startMaintenance(s, resume) {
+    this.busy = true;
+    try {
+      if (s.turnStatus === 'active') await this.requestPause(s);
+      else if (s.turnStatus === 'idle') await this.compact(s, resume);
+      else throw Object.assign(new Error('Unknown thread state'), { code: 'thread-state-unknown' });
+    } finally {
+      this.busy = false;
+      if (!this.pending) this.codex.endOperation?.(s.sessionId);
+      if (this.needsWake && !this.closed) { this.needsWake = false; this.wake(); }
+    }
+  }
+
   async requestPause(s) {
     const p = this.pending;
     this.state = 'awaiting-idle';
@@ -365,6 +432,9 @@ export class Controller extends EventEmitter {
       await this.reader.refresh();
       if (!this.isPending(p)) return;
       const fresh = this.reader.snapshot();
+      if (p.explicit && p.adoptedCompaction && (!this.pauseIsIdle(fresh, p) || stamp(fresh) !== p.stamp)) {
+        this.state = 'awaiting-idle'; return;
+      }
       if (stamp(fresh) !== p.stamp || fresh.turnStatus !== 'idle' || !fresh.supported || fresh.userStopped) {
         throw Object.assign(new Error('Pause state changed'), { code: 'pause-state-changed' });
       }
@@ -385,6 +455,7 @@ export class Controller extends EventEmitter {
         if (continuation === 'yes') await this.continueWithoutCompaction(fresh, p);
         else {
           this.record('compacted', { kind: p.kind, origin: 'native' });
+          this.codex.endOperation?.(s.sessionId);
           this.pending = null;
           this.state = 'observing';
           this.lastEvaluation = evaluationKey(fresh);
@@ -396,6 +467,7 @@ export class Controller extends EventEmitter {
         this.record('checkpoint-withdrawn', { reason: p.deferralReason });
         if (continuation === 'yes') await this.continueWithoutCompaction(fresh, p);
         else {
+          this.codex.endOperation?.(s.sessionId);
           this.pending = null;
           this.state = 'observing';
           this.lastEvaluation = evaluationKey(fresh);
@@ -441,6 +513,7 @@ export class Controller extends EventEmitter {
     }));
     if (!this.isPending(p)) return;
     this.record(adopted ? 'resumed' : 'continued-without-compaction', adopted ? { origin: 'native-compaction' } : {});
+    this.codex.endOperation?.(s.sessionId);
     this.pending = null;
     this.state = 'observing';
     // Reuse the normal request/growth cadence from this deferred checkpoint.
@@ -537,6 +610,7 @@ export class Controller extends EventEmitter {
       completion?.cancel();
       if (this.cancelCompletion === completion?.cancel) this.cancelCompletion = null;
       if (this.pending === p && this.state !== 'recovery-required') {
+        this.codex.endOperation?.(s.sessionId);
         this.pending = null;
         this.state = 'observing';
       }
@@ -556,7 +630,8 @@ export class Controller extends EventEmitter {
       };
       const check = () => {
         const s = this.reader.snapshot();
-        if (s.compactionGeneration > generation && s.turnStatus === 'idle') finish();
+        if (s.compactionGeneration > generation && s.turnStatus === 'idle'
+          && (this.codex.capabilities?.explicitMaintenance !== true || s.compactionRunStatus === 'completed')) finish();
       };
       const timer = setTimeout(() => finish(Object.assign(new Error('No compaction completion'), { code: 'compaction-timeout' })), this.config.compactionTimeoutMs ?? 300000);
       cancel = () => finish(cancelled());
@@ -570,6 +645,7 @@ export class Controller extends EventEmitter {
   }
 
   close() {
+    this.codex.endOperation?.(this.reader.snapshot().sessionId);
     this.closed = true;
     clearTimeout(this.debounce);
     this.evaluation?.abort();
