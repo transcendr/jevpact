@@ -23,6 +23,11 @@ const finalReport = (s, p) => {
     && ['final', 'final_answer'].includes(m.phase))
     ?? s.recentFinalReports?.findLast(afterNotice) ?? null;
 };
+const pauseEvidence = (s, p) => {
+  const final = finalReport(s, p);
+  return JSON.stringify([s.turnId, final?.sequence, final?.text, s.latestOmittedActivity?.sequence,
+    s.messages?.findLast(m => m.role === 'assistant')?.sequence]);
+};
 const evaluationKey = s => `${stamp(s)}:${s.requests}:${s.messages?.findLast(m => m.role === 'assistant')?.sequence ?? ''}:${s.turnStatus}`;
 const cancelled = () => Object.assign(new Error('Controller action cancelled'), { code: 'action-cancelled' });
 const controlText = (prefix, body, fallback, context) => body == null ? fallback : `${prefix} ${renderMessageTemplate(body, context)}`;
@@ -214,6 +219,7 @@ export class Controller extends EventEmitter {
       this.recover(this.pending, error, 'paused-observation');
       return;
     }
+    if (this.pending) this.codex.endOperation?.(this.reader.snapshot().sessionId);
     this.pending?.abort.abort();
     this.cancelCompletion?.();
     this.pending = null;
@@ -458,7 +464,8 @@ export class Controller extends EventEmitter {
       const freshFinal = finalReport(fresh, p);
       p.pauseWrapUp = freshFinal?.text ?? final.text;
       const freshEvidenceGap = fresh.latestOmittedActivity?.sequence > (freshFinal?.sequence ?? -1);
-      const changed = fresh.revision !== s.revision;
+      // T3 revisions advance on every event, including trailing ones after a turn ends.
+      const changed = pauseEvidence(fresh, p) !== pauseEvidence(s, p);
       this.record('pause-checked', { kind: p.kind, deferral, continuation, changed, evidenceGap: !!freshEvidenceGap,
         evaluationId: result.evaluationId, checkpointEvaluationId: p.evaluationId,
         latencyMs: result.latencyMs });

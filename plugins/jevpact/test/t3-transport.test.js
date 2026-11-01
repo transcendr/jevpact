@@ -128,6 +128,18 @@ for (const status of ['rejected', 'uncertain']) test(`${status} delivery does no
   await assert.rejects(action, { code: status === 'uncertain' ? 'maintenance-ambiguous-delivery' : 'maintenance-stale-target' });
 });
 
+test('a rejected pause releases the operation so a later checkpoint can pause', async t => {
+  const f = fixture(t); const c = automaticController(t, f);
+  const first = c.tick(); await turn(); f.deliver('pause', 'rejected'); await first;
+  assert.ok(c.log.some(item => item.event === 'unavailable' && item.reason === 'maintenance-stale-target'));
+  assert.equal(c.pending, null);
+  f.reader.update({ requests: DEFAULT_POLICY.minRequests + 1, requestsSinceCompaction: DEFAULT_POLICY.minRequests + 1 });
+  const second = c.tick(); await turn(); await turn(); f.deliver('pause'); await second;
+  assert.equal(f.commands.filter(command => command.action === 'pause').length, 2);
+  assert.equal(new Set(f.commands.map(command => command.operationId)).size, 2);
+  assert.ok(!c.log.some(item => item.reason === 'action-in-progress'));
+});
+
 for (const change of [{ userStopped: true }, { userEpoch: 2 }, { providerSessionId: 'replacement' }, { supported: false }]) {
   test(`pending mutation cancels on ${Object.keys(change)[0]} without a successor command`, async t => {
     const f = fixture(t); await f.transport.beginOperation('thread');

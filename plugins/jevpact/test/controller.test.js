@@ -654,12 +654,29 @@ test('activity changing during post-pause assessment surfaces stale continuation
   controller.evaluate = () => response.promise;
   const tick = controller.tick();
   await nextTask();
-  reader.update({ revision: reader.s.revision + 1 });
+  reader.update({ revision: reader.s.revision + 1, latestOmittedActivity: { sequence: 99 } });
   response.resolve({ answers: clearContinuation() });
   await tick;
   assert.deepEqual(actions, []);
   assert.equal(controller.state, 'recovery-required');
   assert.equal(controller.view().recoveryRequired.reason, 'pause-continuation-stale');
+});
+
+test('a trailing event with no new evidence during post-pause assessment does not strand the pause', async t => {
+  const { reader, controller, actions } = make(t);
+  await pauseParent(reader, controller);
+  const response = deferred();
+  controller.evaluate = () => response.promise;
+  const tick = controller.tick();
+  await nextTask();
+  reader.update({ revision: reader.s.revision + 1 });
+  response.resolve({ answers: clearContinuation() });
+  await nextTask();
+  assert.notEqual(controller.state, 'recovery-required');
+  assert.deepEqual(actions, ['compact']);
+  reader.update({ compactionGeneration: 1, turnId: 'compact-turn', turnStatus: 'idle' });
+  await tick;
+  assert.deepEqual(actions, ['compact', 'resume']);
 });
 
 test('losing transcript support after pause cancels classification and preserves recovery status', async t => {
