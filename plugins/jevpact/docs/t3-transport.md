@@ -4,7 +4,9 @@ The macOS T3 service runs alongside the Codex Desktop service. Every command req
 
 ## Install and run
 
-Update the Desktop plugin hooks and controller from this revision before running both services together. Both reject Codex rollouts whose native session metadata identifies the originator as `T3 Code`, including remembered attachments. That marker already exists on unpatched T3; exclusion does not depend on the T3 service or guarded-maintenance capability. Desktop and terminal Codex sessions continue through the existing attachment path. A separate provider `CODEX_HOME` is used for isolated testing; the service profile itself does not change the provider home.
+Use a patched T3 build that disables `jevpact@jevpact` in each Codex child process. This prevents the existing Codex Desktop hooks from attaching new T3 sessions without changing the Desktop plugin, controller or global configuration. The override is `--config plugins.jevpact@jevpact.enabled=false`; literal quote characters around the plugin key do not disable it. Other plugins and hooks remain enabled. The T3 service profile isolates its own paths; it does not change the provider home. A separate provider `CODEX_HOME` is used for isolated testing.
+
+The per-process override does not remove T3 sessions already remembered by an older Desktop controller. Those watchers continue evaluating until their per-thread configuration is turned off. The smallest remedy is `jevpact config set mode off --thread NATIVE_T3_ID` for each already remembered T3 session; do this separately under explicit authorization. It changes only those T3 task overrides. Do not stop or replace the Desktop service to install T3 support.
 
 Use Node.js 22.13 or later. Have the T3 server running and obtain a bearer credential for that environment with permission to observe threads and, for automatic maintenance, dispatch guarded maintenance. Put the raw T3 credential and Jev API key in separate files owned by you, with mode 0600. Pass file paths; never put secret values in arguments or configuration.
 
