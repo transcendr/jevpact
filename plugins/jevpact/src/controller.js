@@ -88,6 +88,21 @@ export class Controller extends EventEmitter {
     this.record('unavailable', { reason: 'maintenance-busy' });
   }
 
+  /** T3 refuses a resume once another run opens, and that run already carries the thread on. */
+  async resumeSuperseded(p, error) {
+    if (error?.code !== 'maintenance-stale-target' || error.ambiguous || !p.resumeFromTurn) return false;
+    await this.reader.refresh().catch(() => {});
+    const current = this.reader.snapshot();
+    return current.supported && !current.userStopped && current.turnStatus === 'active' && current.turnId !== p.resumeFromTurn;
+  }
+
+  releaseSuperseded(s) {
+    this.codex.endOperation?.(s.sessionId);
+    this.pending = null;
+    this.state = 'observing';
+    this.record('left-idle', { reason: 'new run before resume' });
+  }
+
   countLostPause(s) {
     const count = this.lostPauses?.stamp === stamp(s) ? this.lostPauses.count + 1 : 1;
     this.lostPauses = { stamp: stamp(s), count };
@@ -533,6 +548,7 @@ export class Controller extends EventEmitter {
     } catch (error) {
       if (!this.isPending(p) || error?.code === 'action-cancelled') return;
       if (error?.code === 'maintenance-busy') this.releaseBusy(s);
+      else if (await this.resumeSuperseded(p, error)) { if (this.isPending(p)) this.releaseSuperseded(s); }
       else this.recover(p, error, 'pause-check-or-continuation');
     }
   }
@@ -554,6 +570,7 @@ export class Controller extends EventEmitter {
     // Starting this continuation changes the native turn by design. Keep that
     // transition distinct from an unexpected change to the paused work.
     this.state = 'continuing';
+    p.resumeFromTurn = native.lastTurnId;
     const adopted = !!p.adoptedCompaction;
     if (!adopted) this.deferredBaseline = { stamp: stamp(s), requests: s.requests, inputTokens: usage(s).inputTokens };
     const message = adopted
@@ -650,6 +667,7 @@ export class Controller extends EventEmitter {
           return;
         }
         stage = 'resume-request';
+        p.resumeFromTurn = context.lastTurnId;
         const message = controlText(RESUME_PREFIX, this.config.resumeMessage, RESUME_TEXT,
           { ...p.templateContext, snapshot: p.preCompactionSnapshot, phase: 'resume',
             reason: 'native-compaction-complete', trigger: p.kind, pauseWrapUp: p.pauseWrapUp,
@@ -667,6 +685,8 @@ export class Controller extends EventEmitter {
       const reason = error?.code ?? error?.name ?? 'Error';
       if (reason === 'maintenance-busy' && !error?.ambiguous) {
         this.releaseBusy(s);
+      } else if (await this.resumeSuperseded(p, error)) {
+        if (this.isPending(p)) this.releaseSuperseded(s);
       } else if (p.delivered || ambiguous) {
         this.recover(p, error, stage, ambiguous);
       } else this.record('unavailable', { reason });

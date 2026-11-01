@@ -757,6 +757,37 @@ for (const refused of ['resume', 'compact']) test(`a busy refusal of ${refused} 
   assert.equal(pauses.length, 1);
 });
 
+for (const refused of ['resume after compaction', 'resume without compaction']) test(`a queued run that starts first replaces a refused ${refused}`, async t => {
+  const { reader, codex, controller, pauses } = make(t);
+  await pauseParent(reader, controller);
+  const deferred = refused.endsWith('without compaction');
+  codex.resume = async () => {
+    reader.update({ turnId: 'queued-turn', turnStatus: 'active', revision: 99 });
+    throw Object.assign(new Error('Stale'), { code: 'maintenance-stale-target' });
+  };
+  controller.evaluate = async () => ({ answers: clearContinuation(deferred ? { deferral: { choice: 'yes', probability: 0.95, confidence: 0.8 } } : {}) });
+  const tick = controller.tick();
+  await nextTask();
+  if (!deferred) reader.update({ compactionGeneration: 1, turnId: 'compact-turn', turnStatus: 'idle' });
+  await tick;
+  assert.notEqual(controller.state, 'recovery-required');
+  assert.equal(controller.pending, null);
+  assert.ok(controller.log.some(item => item.event === 'left-idle' && item.reason === 'new run before resume'));
+  assert.equal(pauses.length, 1);
+});
+
+test('a stale resume with no new run still requires recovery', async t => {
+  const { reader, codex, controller } = make(t);
+  await pauseParent(reader, controller);
+  codex.resume = async () => { throw Object.assign(new Error('Stale'), { code: 'maintenance-stale-target' }); };
+  controller.evaluate = async () => ({ answers: clearContinuation() });
+  const tick = controller.tick();
+  await nextTask();
+  reader.update({ compactionGeneration: 1, turnId: 'compact-turn', turnStatus: 'idle' });
+  await tick;
+  assert.equal(controller.state, 'recovery-required');
+});
+
 test('losing transcript support after pause cancels classification and preserves recovery status', async t => {
   const { reader, controller, actions } = make(t);
   await pauseParent(reader, controller);
