@@ -743,6 +743,20 @@ test('pauses that keep losing their turn stop until direction or compaction chan
   assert.equal(pauses.length, 3, 'Compaction starts a fresh allowance');
 });
 
+for (const refused of ['resume', 'compact']) test(`a busy refusal of ${refused} releases the thread because its own work will wake it`, async t => {
+  const { reader, codex, controller, pauses } = make(t);
+  await pauseParent(reader, controller);
+  const busy = async () => { throw Object.assign(new Error('Busy'), { code: 'maintenance-busy' }); };
+  codex[refused] = busy;
+  controller.evaluate = async () => ({ answers: clearContinuation(refused === 'resume'
+    ? { deferral: { choice: 'yes', probability: 0.95, confidence: 0.8 } } : {}) });
+  await controller.tick();
+  assert.notEqual(controller.state, 'recovery-required');
+  assert.equal(controller.pending, null);
+  assert.ok(controller.log.some(item => item.event === 'unavailable' && item.reason === 'maintenance-busy'));
+  assert.equal(pauses.length, 1);
+});
+
 test('losing transcript support after pause cancels classification and preserves recovery status', async t => {
   const { reader, controller, actions } = make(t);
   await pauseParent(reader, controller);

@@ -79,6 +79,15 @@ export class Controller extends EventEmitter {
       && ['awaiting-idle', 'checking-pause'].includes(this.state) && s.turnId != null && s.turnId !== p.turnId;
   }
 
+  releaseBusy(s) {
+    // Pending work, a request or a goal will wake this thread, so it is not stranded.
+    if (this.pending.delivered) this.countLostPause(s);
+    this.codex.endOperation?.(s.sessionId);
+    this.pending = null;
+    this.state = 'observing';
+    this.record('unavailable', { reason: 'maintenance-busy' });
+  }
+
   countLostPause(s) {
     const count = this.lostPauses?.stamp === stamp(s) ? this.lostPauses.count + 1 : 1;
     this.lostPauses = { stamp: stamp(s), count };
@@ -522,7 +531,9 @@ export class Controller extends EventEmitter {
       if (freshEvidenceGap) this.record('pressure-fallback', { reason: 'headroom decision retained despite opaque activity' });
       await this.compact(fresh, continuation === 'yes');
     } catch (error) {
-      if (this.isPending(p) && error?.code !== 'action-cancelled') this.recover(p, error, 'pause-check-or-continuation');
+      if (!this.isPending(p) || error?.code === 'action-cancelled') return;
+      if (error?.code === 'maintenance-busy') this.releaseBusy(s);
+      else this.recover(p, error, 'pause-check-or-continuation');
     }
   }
 
@@ -654,7 +665,9 @@ export class Controller extends EventEmitter {
       if (!this.isPending(p) || error?.code === 'action-cancelled') return;
       const ambiguous = error?.ambiguous === true || stage === 'compaction-completion';
       const reason = error?.code ?? error?.name ?? 'Error';
-      if (p.delivered || ambiguous) {
+      if (reason === 'maintenance-busy' && !error?.ambiguous) {
+        this.releaseBusy(s);
+      } else if (p.delivered || ambiguous) {
         this.recover(p, error, stage, ambiguous);
       } else this.record('unavailable', { reason });
     } finally {
