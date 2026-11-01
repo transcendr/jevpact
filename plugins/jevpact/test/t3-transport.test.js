@@ -128,6 +128,22 @@ for (const status of ['rejected', 'uncertain']) test(`${status} delivery does no
   await assert.rejects(action, { code: status === 'uncertain' ? 'maintenance-ambiguous-delivery' : 'maintenance-stale-target' });
 });
 
+test('compaction after a followed continuation run targets that run in a fresh operation', async t => {
+  const f = fixture(t); const c = automaticController(t, f);
+  const first = c.tick(); await turn(); const pause = f.deliver('pause'); await first;
+  f.reader.update({ runId: 'wake', turnId: 'wake', workRunId: 'wake', runAttemptId: 'wake-attempt', runContinuation: true });
+  f.reader.update({ turnStatus: 'idle', lastTurnStatus: 'completed', messages: [
+    { role: 'assistant', turnId: 'wake', sequence: 20, phase: 'final', text: 'Step one is verified. Next implement step two; no input is needed.' }] });
+  const task = c.tick(); await turn(); await turn();
+  const compact = f.commands.find(command => command.action === 'compact');
+  assert.ok(compact, 'No compact command');
+  assert.equal(compact.guard.workRunId, 'wake');
+  assert.equal(compact.guard.runId, 'wake');
+  assert.notEqual(compact.operationId, pause.operationId);
+  assert.ok(!c.log.some(item => item.event === 'recovery-required'));
+  c.pending.abort.abort(); c.stopped = true; await task.catch(() => {});
+});
+
 test('a rejected pause releases the operation so a later checkpoint can pause', async t => {
   const f = fixture(t); const c = automaticController(t, f);
   const first = c.tick(); await turn(); f.deliver('pause', 'rejected'); await first;

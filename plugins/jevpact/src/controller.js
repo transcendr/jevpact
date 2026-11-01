@@ -583,6 +583,12 @@ export class Controller extends EventEmitter {
     let completion;
     let stage = 'before-compaction';
     try {
+      if (p.operationId && p.continuedFrom?.length && !p.operationRenewed) {
+        // T3 binds an operation to its run, so a followed continuation needs a new one.
+        this.codex.endOperation(s.sessionId);
+        p.operationId = await this.whilePending(p, () => this.codex.beginOperation(s.sessionId, { isCurrent: () => this.isPending(p) }));
+        p.operationRenewed = true;
+      }
       const before = await this.whilePending(p, () => this.codex.status(s.sessionId));
       await this.reader.refresh();
       const current = this.reader.snapshot();
