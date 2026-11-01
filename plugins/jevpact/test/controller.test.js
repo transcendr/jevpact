@@ -679,6 +679,70 @@ test('a trailing event with no new evidence during post-pause assessment does no
   assert.deepEqual(actions, ['compact', 'resume']);
 });
 
+for (const wrapUpTurn of ['turn-1', 'turn-2']) test(`a delivered pause follows a provider continuation run with its wrap-up in ${wrapUpTurn}`, async t => {
+  const { reader, controller, actions, pauses } = make(t);
+  await controller.tick();
+  assert.equal(pauses.length, 1);
+  reader.update({ turnId: 'turn-2', runContinuation: true, revision: 2 });
+  await controller.tick();
+  reader.update({ turnStatus: 'idle', revision: 3, messages: [{ role: 'assistant', phase: 'final', turnId: wrapUpTurn, sequence: 10, text: 'The local behavior is verified. The next step is to run the integration check.' }] });
+  reader.s.packet = buildPacket(reader.s);
+  const tick = controller.tick();
+  await nextTask();
+  assert.deepEqual(actions, ['compact']);
+  assert.equal(pauses.length, 1);
+  assert.ok(!controller.log.some(item => item.event === 'cancelled'));
+  reader.update({ compactionGeneration: 1, turnId: 'compact-turn', turnStatus: 'idle', runContinuation: false });
+  await tick;
+  assert.deepEqual(actions, ['compact', 'resume']);
+});
+
+test('a continuation run arriving during the pause check returns to waiting instead of stranding', async t => {
+  const { reader, controller, actions } = make(t);
+  await pauseParent(reader, controller);
+  const response = deferred();
+  controller.evaluate = () => response.promise;
+  const tick = controller.tick();
+  await nextTask();
+  reader.update({ turnId: 'turn-2', turnStatus: 'active', runContinuation: true, revision: 9 });
+  response.resolve({ answers: clearContinuation() });
+  await tick;
+  assert.notEqual(controller.state, 'recovery-required');
+  assert.deepEqual(actions, []);
+  controller.evaluate = async () => ({ answers: clearContinuation() });
+  reader.update({ turnStatus: 'idle', revision: 10 });
+  const next = controller.tick();
+  await nextTask();
+  assert.deepEqual(actions, ['compact']);
+  reader.update({ compactionGeneration: 1, turnId: 'compact-turn', turnStatus: 'idle', runContinuation: false });
+  await next;
+});
+
+test('pauses that keep losing their turn stop until direction or compaction changes', async t => {
+  const { reader, controller, actions, pauses } = make(t);
+  const diagnostics = [];
+  controller.on('diagnostic', event => diagnostics.push(event));
+  for (let cycle = 2; cycle <= 6; cycle++) {
+    await controller.tick();
+    reader.update({ turnId: `turn-${cycle}`, requests: 5 + cycle, requestsSinceCompaction: 5 + cycle, revision: cycle,
+      messages: [{ role: 'assistant', turnId: `turn-${cycle}`, sequence: 8 + cycle, text: 'Still working on the same step.' }] });
+  }
+  await controller.tick();
+  assert.equal(pauses.length, 2);
+  assert.ok(diagnostics.some(item => item.event === 'skipped' && item.reason === 'pause-retry-limit'));
+  reader.update({ turnStatus: 'idle', requests: 20, requestsSinceCompaction: 20, revision: 20 });
+  const idle = controller.tick();
+  await nextTask();
+  assert.deepEqual(actions, ['compact'], 'An idle thread needs no message, so compaction stays available');
+  reader.update({ compactionGeneration: 1, turnId: 'compact-turn', turnStatus: 'idle' });
+  await idle;
+  assert.equal(pauses.length, 2);
+  reader.update({ turnStatus: 'active', turnId: 'turn-7', requests: 30, requestsSinceCompaction: 9, revision: 30,
+    messages: [{ role: 'assistant', turnId: 'turn-7', sequence: 40, text: 'New work.' }] });
+  await controller.tick();
+  assert.equal(pauses.length, 3, 'Compaction starts a fresh allowance');
+});
+
 test('losing transcript support after pause cancels classification and preserves recovery status', async t => {
   const { reader, controller, actions } = make(t);
   await pauseParent(reader, controller);

@@ -17,7 +17,7 @@ const chronology = s => ({
 });
 const assistantReport = (s, turnId) => s.messages?.findLast(m => m.role === 'assistant' && m.turnId === turnId) ?? null;
 const finalReport = (s, p) => {
-  const afterNotice = report => report?.turnId === p.turnId
+  const afterNotice = report => (report?.turnId === p.turnId || p.continuedFrom?.includes(report?.turnId))
     && Number.isFinite(report.sequence) && report.sequence > (p.preNoticeReport?.sequence ?? -1);
   return s.messages?.findLast(m => afterNotice(m) && m.role === 'assistant'
     && ['final', 'final_answer'].includes(m.phase))
@@ -25,9 +25,10 @@ const finalReport = (s, p) => {
 };
 const pauseEvidence = (s, p) => {
   const final = finalReport(s, p);
-  return JSON.stringify([s.turnId, final?.sequence, final?.text, s.latestOmittedActivity?.sequence,
+  return JSON.stringify([final?.sequence, final?.text, s.latestOmittedActivity?.sequence,
     s.messages?.findLast(m => m.role === 'assistant')?.sequence]);
 };
+const PAUSE_RETRY_LIMIT = 2;
 const evaluationKey = s => `${stamp(s)}:${s.requests}:${s.messages?.findLast(m => m.role === 'assistant')?.sequence ?? ''}:${s.turnStatus}`;
 const cancelled = () => Object.assign(new Error('Controller action cancelled'), { code: 'action-cancelled' });
 const controlText = (prefix, body, fallback, context) => body == null ? fallback : `${prefix} ${renderMessageTemplate(body, context)}`;
@@ -59,12 +60,28 @@ export class Controller extends EventEmitter {
         if (this.state !== 'recovery-required') this.recover(this.pending, { code: 'transcript-unavailable' }, 'paused-observation');
       } else if (this.pending && (!s.supported || s.userStopped || s.userEpoch !== this.pending.userEpoch)) {
         this.invalidate('new direction, stop, or unavailable transcript');
+      } else if (this.continuationFollowsPause(s)) {
+        // T3 opens a run for background activity after a turn ends. No one gave new direction, so the pause stands.
+        (this.pending.continuedFrom ??= []).push(this.pending.turnId);
+        this.pending.turnId = s.turnId;
       } else if (this.selectedTurnChanged(s)) {
+        if (this.pending.delivered) this.countLostPause(s);
         this.invalidate('selected turn changed');
       }
       this.wake();
     };
     reader.on('change', this.onChange);
+  }
+
+  continuationFollowsPause(s) {
+    const p = this.pending;
+    return !!p?.delivered && !!s.runContinuation && !(p.operationId && p.adoptedCompaction)
+      && ['awaiting-idle', 'checking-pause'].includes(this.state) && s.turnId != null && s.turnId !== p.turnId;
+  }
+
+  countLostPause(s) {
+    const count = this.lostPauses?.stamp === stamp(s) ? this.lostPauses.count + 1 : 1;
+    this.lostPauses = { stamp: stamp(s), count };
   }
 
   selectedTurnChanged(s) {
@@ -328,6 +345,9 @@ export class Controller extends EventEmitter {
         this.record('would-checkpoint', { kind: decision.kind, reason: decision.reason });
         return;
       }
+      if (s.turnStatus === 'active' && this.lostPauses?.stamp === stamp(s) && this.lostPauses.count >= PAUSE_RETRY_LIMIT) {
+        this.skip('pause-retry-limit', s); return;
+      }
       let operationId;
       if (typeof this.codex.beginOperation === 'function') {
         const isCurrent = () => this.maintenanceIsCurrent(s) && (this.config.mode ?? 'automatic') === 'automatic';
@@ -454,6 +474,9 @@ export class Controller extends EventEmitter {
       if (!this.isPending(p)) return;
       const fresh = this.reader.snapshot();
       if (p.operationId && p.adoptedCompaction && (!this.pauseIsIdle(fresh, p) || stamp(fresh) !== p.stamp)) {
+        this.state = 'awaiting-idle'; return;
+      }
+      if (fresh.runContinuation && fresh.turnStatus === 'active' && stamp(fresh) === p.stamp && fresh.supported && !fresh.userStopped) {
         this.state = 'awaiting-idle'; return;
       }
       if (stamp(fresh) !== p.stamp || fresh.turnStatus !== 'idle' || !fresh.supported || fresh.userStopped) {

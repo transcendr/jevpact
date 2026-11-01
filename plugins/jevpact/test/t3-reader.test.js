@@ -102,6 +102,18 @@ for (const driver of ['codex', 'claudeAgent']) {
   });
 }
 
+test('a provider continuation run is marked and an agent-sent run is not', async t => {
+  const f = fixture('claudeAgent'); t.after(() => f.reader.close()); await f.reader.open();
+  f.event('run.updated', f.run('work', 'running', 1));
+  f.event('message.updated', f.message('work-message', 'user', 'Do it.', { createdBy: 'agent' }));
+  assert.equal(f.reader.snapshot().runContinuation, false);
+  f.event('run.updated', f.run('work', 'completed', 1));
+  f.event('message.updated', f.message('wake-message', 'user', 'Continue.', { runId: 'wake', createdBy: 'agent', creationSource: 'server',
+    notification: { source: { kind: 'background_task' }, outcome: 'updated', summary: 'Background activity updated' } }));
+  f.event('run.updated', f.run('wake', 'running', 2));
+  assert.equal(f.reader.snapshot().runContinuation, true);
+});
+
 test('explicit stop survives an agent message and is cleared by a new human direction', async t => {
   const f = fixture('codex'); t.after(() => f.reader.close()); await f.reader.open();
   f.event('message.updated', f.message('first', 'user', 'Do the task.'));

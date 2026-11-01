@@ -235,6 +235,7 @@ export class T3State {
       nativeSessionRef: structuredClone(provider?.nativeThreadRef ?? null),
       runAttemptId: run?.activeAttemptId ?? null,
       runMessageObserved: this.collections.messages.has(run?.userMessageId),
+      runContinuation: !!this.collections.messages.get(run?.userMessageId)?.notification,
       historyCursor: this.historyCursor, historyComplete: this.historyComplete === true,
       controlMessages: list(this.collections.messages).filter(item => item.maintenance)
         .map(item => ({ id: item.id, runId: item.runId, maintenance: structuredClone(item.maintenance) })),

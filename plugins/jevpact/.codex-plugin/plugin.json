@@ -1,6 +1,6 @@
 {
   "name": "jevpact",
-  "version": "0.1.0-dev.1+codex.20260927104914.dualprofile12",
+  "version": "0.1.0-dev.1+codex.20260927104914.dualprofile13",
   "description": "Compact Codex at useful work transitions, then continue safely.",
   "skills": "./skills/",
   "author": {
