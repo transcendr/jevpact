@@ -28,6 +28,7 @@ const pauseEvidence = (s, p) => {
   return JSON.stringify([final?.sequence, final?.text, s.latestOmittedActivity?.sequence,
     s.messages?.findLast(m => m.role === 'assistant')?.sequence]);
 };
+const SUPERSEDED_RESUME = new Set(['maintenance-stale-target', 'stale-action', 'stale-turn', 'continuation-not-current']);
 const PAUSE_RETRY_LIMIT = 2;
 const evaluationKey = s => `${stamp(s)}:${s.requests}:${s.messages?.findLast(m => m.role === 'assistant')?.sequence ?? ''}:${s.turnStatus}`;
 const cancelled = () => Object.assign(new Error('Controller action cancelled'), { code: 'action-cancelled' });
@@ -88,9 +89,9 @@ export class Controller extends EventEmitter {
     this.record('unavailable', { reason: 'maintenance-busy' });
   }
 
-  /** T3 refuses a resume once another run opens, and that run already carries the thread on. */
+  /** T3 or the transport refuses a resume once another run opens, and that run carries the thread on. */
   async resumeSuperseded(p, error) {
-    if (error?.code !== 'maintenance-stale-target' || error.ambiguous || !p.resumeFromTurn) return false;
+    if (!SUPERSEDED_RESUME.has(error?.code) || error.ambiguous || !p.resumeFromTurn) return false;
     await this.reader.refresh().catch(() => {});
     const current = this.reader.snapshot();
     return current.supported && !current.userStopped && current.turnStatus === 'active' && current.turnId !== p.resumeFromTurn;
@@ -655,6 +656,7 @@ export class Controller extends EventEmitter {
       this.record('compacted', { kind: p.kind });
       if (resume) {
         stage = 'before-resume';
+        p.resumeFromTurn = after.turnId;
         const context = await this.whilePending(p, () => this.codex.status(s.sessionId));
         const resumeCurrent = () => {
           const snapshot = this.reader.snapshot();
@@ -667,7 +669,6 @@ export class Controller extends EventEmitter {
           return;
         }
         stage = 'resume-request';
-        p.resumeFromTurn = context.lastTurnId;
         const message = controlText(RESUME_PREFIX, this.config.resumeMessage, RESUME_TEXT,
           { ...p.templateContext, snapshot: p.preCompactionSnapshot, phase: 'resume',
             reason: 'native-compaction-complete', trigger: p.kind, pauseWrapUp: p.pauseWrapUp,

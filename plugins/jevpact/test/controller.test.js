@@ -757,13 +757,13 @@ for (const refused of ['resume', 'compact']) test(`a busy refusal of ${refused} 
   assert.equal(pauses.length, 1);
 });
 
-for (const refused of ['resume after compaction', 'resume without compaction']) test(`a queued run that starts first replaces a refused ${refused}`, async t => {
+for (const code of ['maintenance-stale-target', 'stale-action', 'stale-turn']) for (const refused of ['resume after compaction', 'resume without compaction']) test(`a queued run that starts first replaces a ${code} ${refused}`, async t => {
   const { reader, codex, controller, pauses } = make(t);
   await pauseParent(reader, controller);
   const deferred = refused.endsWith('without compaction');
   codex.resume = async () => {
     reader.update({ turnId: 'queued-turn', turnStatus: 'active', revision: 99 });
-    throw Object.assign(new Error('Stale'), { code: 'maintenance-stale-target' });
+    throw Object.assign(new Error('Stale'), { code });
   };
   controller.evaluate = async () => ({ answers: clearContinuation(deferred ? { deferral: { choice: 'yes', probability: 0.95, confidence: 0.8 } } : {}) });
   const tick = controller.tick();
@@ -774,6 +774,25 @@ for (const refused of ['resume after compaction', 'resume without compaction']) 
   assert.equal(controller.pending, null);
   assert.ok(controller.log.some(item => item.event === 'left-idle' && item.reason === 'new run before resume'));
   assert.equal(pauses.length, 1);
+});
+
+test('a queued run that opens just before the resume check is not a recovery', async t => {
+  const { reader, codex, controller } = make(t);
+  await pauseParent(reader, controller);
+  const status = codex.status;
+  let calls = 0;
+  codex.status = async (...args) => {
+    const value = await status(...args);
+    if (++calls === 3) reader.update({ turnId: 'queued-turn', turnStatus: 'active', revision: 99 });
+    return value;
+  };
+  controller.evaluate = async () => ({ answers: clearContinuation() });
+  const tick = controller.tick();
+  await nextTask();
+  reader.update({ compactionGeneration: 1, turnId: 'compact-turn', turnStatus: 'idle' });
+  await tick;
+  assert.notEqual(controller.state, 'recovery-required');
+  assert.equal(controller.pending, null);
 });
 
 test('a stale resume with no new run still requires recovery', async t => {
