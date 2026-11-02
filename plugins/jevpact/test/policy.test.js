@@ -145,3 +145,11 @@ test('headroom pressure remains explicit despite an uninterpreted opaque result'
   assert.equal(decide(current).action, 'checkpoint');
   assert.equal(decide(current).kind, 'pressure');
 });
+
+test('incomplete timing evidence never asks for signals, even with uninterpreted activity', () => {
+  const decision = decide({ usage: { inputTokens: 210000, contextWindow: 570000, recentGrowthTokens: 1000 }, baseline: { inputTokens: 0 },
+    requestsSinceCompact: 10, chronology: { latestAssistantSequence: 5, latestOmittedActivitySequence: 9 },
+    timing: { available: false, reason: 'timing-evidence-incomplete' } });
+  assert.equal(decision.action, 'wait');
+  assert.equal(decision.requiresSignals, false);
+});

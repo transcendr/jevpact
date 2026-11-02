@@ -45,10 +45,11 @@ export function decide({ usage, baseline, requestsSinceCompact, signals, chronol
   const limit = cfg.nativeLimitTokens > 0 ? Math.min(usage.contextWindow, cfg.nativeLimitTokens) : usage.contextWindow;
   const reserve = Math.max(cfg.reserveTokens, Math.ceil(limit * cfg.reserveRatio), (usage.recentGrowthTokens ?? 0) * cfg.growthReserveMultiplier);
   if (limit - usage.inputTokens <= reserve) return result('checkpoint', 'Remaining headroom has reached the wrap-up reserve', 'pressure');
+  // Without a packet there is nothing to send Jev, so this precedes every signal-seeking wait.
+  if (timing?.available === false) return { ...result('wait', 'Source-linked timing evidence is incomplete', 'semantic'), requiresSignals: false };
   if (chronology !== undefined && hasUninterpretedActivity(chronology)) {
     return result('wait', 'No visible assistant message follows the latest omitted activity, or chronology is unavailable', 'semantic');
   }
-  if (timing?.available === false) return { ...result('wait', 'Source-linked timing evidence is incomplete', 'semantic'), requiresSignals: false };
   if (timing?.prompted) return { ...result('wait', 'Controller-prompted wrap-up is not an independent checkpoint', 'semantic'), requiresSignals: false };
   if (signals && Object.hasOwn(signals, 'relation')) {
     let answers;
