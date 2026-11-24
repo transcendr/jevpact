@@ -368,12 +368,10 @@ test('malformed consumed lifecycle fields and goal identities fail closed', asyn
   }
 });
 
-test('identity mismatch, unknown records and malformed complete lines fail closed', async t => {
+test('identity mismatch and malformed complete lines fail closed', async t => {
   for (const [records, reason] of [
     [[meta({ id: 'other', session_id: 'other' })], 'session-identity-mismatch'],
     [[meta({ id: '', session_id: undefined })], 'session-identity-mismatch'],
-    [[meta(), record('unrecognized', {})], 'unsupported-record'],
-    [[meta(), event('new-lifecycle-event')], 'unsupported-event'],
   ]) {
     const { reader } = await fixture(t, records);
     assert.equal(reader.snapshot().supported, false);
@@ -448,9 +446,18 @@ test('watch callback incrementally refreshes and late watcher errors do not cras
   assert.equal(reader.snapshot().supported, true);
 });
 
-test('a session tool catalogue record does not disable supervision', async t => {
-  const { reader } = await fixture(t, [meta(), record('response_item', { type: 'additional_tools', tools: [] }),
+test('unknown record, event and response item types are skipped and recorded, not disabling supervision', async t => {
+  const { reader } = await fixture(t, [meta(),
+    record('response_item', { type: 'additional_tools', tools: [] }),
+    record('response_item', { type: 'configuration_update', settings: {} }),
+    record('response_item', { type: 'future_item' }),
+    event('new-lifecycle-event'),
+    record('future_record', {}),
     message('user', 'Continue the assignment.')]);
-  assert.equal(reader.snapshot().supported, true);
-  assert.equal(reader.snapshot().latestUserDirection.text, 'Continue the assignment.');
+  const s = reader.snapshot();
+  assert.equal(s.supported, true);
+  assert.equal(s.disabledReason, null);
+  assert.equal(s.latestUserDirection.text, 'Continue the assignment.');
+  assert.deepEqual(s.unrecognized, { 'response-item:configuration_update': 1, 'response-item:future_item': 1,
+    'event:new-lifecycle-event': 1, 'record:future_record': 1 });
 });

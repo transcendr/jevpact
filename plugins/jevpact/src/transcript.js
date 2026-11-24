@@ -83,7 +83,7 @@ export class Transcript extends EventEmitter {
       recentUserRequests: [], recentFinalReports: [],
       toolCalls: [], lastToolResult: null,
       assignmentSourceThreadId: null,
-      omissions: { messages: 0, chars: 0, opaqueContent: 0 },
+      omissions: { messages: 0, chars: 0, opaqueContent: 0 }, unrecognized: {},
       observationMode: watch ? 'watch' : 'manual', watchError: null,
     };
   }
@@ -184,8 +184,10 @@ export class Transcript extends EventEmitter {
 
   accept(record) {
     const p = record?.payload;
-    if (!object(record) || !object(p) || !TOP_LEVEL.has(record.type)) return this.disable('unsupported-record');
+    if (!object(record) || !object(p)) return this.disable('unsupported-record');
     this.sequence++;
+    // New Codex record, event and item types carry no conversation Jevpact acts on. Skip and record them.
+    if (!TOP_LEVEL.has(record.type)) return this.unrecognized('record', record.type, record);
     if (record.type === 'session_meta') {
       const id = p.session_id ?? p.id;
       if (!identifier(id) || ['id', 'session_id'].some(key => key in p && p[key] !== id)
@@ -268,7 +270,7 @@ export class Transcript extends EventEmitter {
       this.state.goalStatusObserved = true;
       this.state.revision++;
     } else if (!PASSIVE_EVENTS.has(p.type)) {
-      this.disable('unsupported-event');
+      this.unrecognized('event', p.type, record);
     }
   }
 
@@ -290,6 +292,13 @@ export class Transcript extends EventEmitter {
     this.setInput(p.usage.input_tokens);
     if (this.state.baselineInputTokens == null) this.state.baselineInputTokens = p.usage.input_tokens;
     this.state.revision++;
+  }
+
+  unrecognized(kind, type, record) {
+    const key = `${kind}:${typeof type === 'string' ? type.slice(0, 128) : typeof type}`;
+    this.state.unrecognized ??= {};
+    this.state.unrecognized[key] = (this.state.unrecognized[key] ?? 0) + 1;
+    this.omitted(`unrecognized-${kind}`, record);
   }
 
   omitted(kind, record) {
@@ -335,7 +344,7 @@ export class Transcript extends EventEmitter {
       return this.omitted('tool-result-content-omitted', record);
     }
     if (p.type === 'agent_message') return this.omitted('incoming-agent-message-content-omitted', record);
-    if (p.type !== 'message') return this.disable('unsupported-response-item');
+    if (p.type !== 'message') return this.unrecognized('response-item', p.type, record);
     if (!['user', 'assistant'].includes(p.role)) return;
     if (p.role === 'assistant' && [p.phase, p.channel].some(value => !['commentary', 'final', 'final_answer', undefined, null].includes(value))) return;
     this.message(p, record);
